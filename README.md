@@ -1,4 +1,5 @@
-# Trace Replay Benchmark
+# Agentic Trace Replay Benchmark - Analyze your agent performance on OpenShift
+<img width="1024" height="1024" alt="image" src="https://github.com/user-attachments/assets/bcd098dc-c97f-4d7e-a8ab-172a33a62cb9" />
 
 Deterministic performance benchmarking for multi-step agentic workloads on
 OpenShift. The current integration measures **OpenClaw** and **OpenShell** with
