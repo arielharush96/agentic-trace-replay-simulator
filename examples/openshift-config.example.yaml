@@ -1,0 +1,10 @@
+# Public example only. Replace all placeholder values for your cluster.
+namespace: trace-replay
+openshell_namespace: openshell-tracesim
+target_node: ""
+openclaw_image: ""
+openshell_gateway_endpoint: ""
+jaeger_endpoint: ""
+thanos_endpoint: ""
+storage_class: ""
+openclaw_gateway_token: "replace-me"

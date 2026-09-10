@@ -1,0 +1,84 @@
+<mxfile host="app.diagrams.net" modified="2026-09-09T00:00:00.000Z" agent="OpenCode" version="24.7.17" type="device">
+  <diagram id="trace-replay-system" name="Trace Replay System">
+    <mxGraphModel dx="1400" dy="900" grid="1" gridSize="10" guides="1" tooltips="1" connect="1" arrows="1" fold="1" page="1" pageScale="1" pageWidth="1400" pageHeight="900" math="0" shadow="0">
+      <root>
+        <mxCell id="0" />
+        <mxCell id="1" parent="0" />
+
+        <mxCell id="title" value="OpenClaw + OpenShell Trace-Replay Profiler" style="text;html=1;strokeColor=none;fillColor=none;align=left;fontSize=24;fontStyle=1;fontColor=#0F172A;" vertex="1" parent="1">
+          <mxGeometry x="45" y="25" width="700" height="35" as="geometry" />
+        </mxCell>
+        <mxCell id="subtitle" value="Deterministic multi-step agent profiling on RHOAI / OpenShift" style="text;html=1;strokeColor=none;fillColor=none;align=left;fontSize=14;fontColor=#475569;" vertex="1" parent="1">
+          <mxGeometry x="47" y="60" width="700" height="25" as="geometry" />
+        </mxCell>
+
+        <mxCell id="dataset" value="1. Trace dataset&lt;br&gt;&lt;font style=&quot;font-size:11px&quot;&gt;Exgentic/agent-llm-traces&lt;br&gt;recorded prompts, decisions, tool calls&lt;/font&gt;" style="rounded=1;whiteSpace=wrap;html=1;fillColor=#FEF3C7;strokeColor=#D97706;strokeWidth=2;fontColor=#78350F;fontSize=14;align=center;verticalAlign=middle;" vertex="1" parent="1">
+          <mxGeometry x="55" y="140" width="190" height="90" as="geometry" />
+        </mxCell>
+        <mxCell id="corpus" value="2. Replay corpus&lt;br&gt;&lt;font style=&quot;font-size:11px&quot;&gt;One corpus per task&lt;br&gt;recorded tool results preserved&lt;/font&gt;" style="rounded=1;whiteSpace=wrap;html=1;fillColor=#FEF3C7;strokeColor=#D97706;strokeWidth=2;fontColor=#78350F;fontSize=14;align=center;verticalAlign=middle;" vertex="1" parent="1">
+          <mxGeometry x="310" y="140" width="190" height="90" as="geometry" />
+        </mxCell>
+        <mxCell id="driver" value="3. Replay driver Job&lt;br&gt;&lt;font style=&quot;font-size:11px&quot;&gt;One top-level request&lt;br&gt;per task&lt;/font&gt;" style="rounded=1;whiteSpace=wrap;html=1;fillColor=#DBEAFE;strokeColor=#2563EB;strokeWidth=2;fontColor=#1E3A8A;fontSize=14;align=center;verticalAlign=middle;" vertex="1" parent="1">
+          <mxGeometry x="565" y="140" width="190" height="90" as="geometry" />
+        </mxCell>
+
+        <mxCell id="runtime" value="SHELL RUNTIME: OpenClaw + OpenShell" style="swimlane;html=1;rounded=1;horizontal=0;startSize=30;fillColor=#F8FAFC;strokeColor=#334155;strokeWidth=2;fontStyle=1;fontColor=#0F172A;" vertex="1" parent="1">
+          <mxGeometry x="55" y="300" width="1120" height="280" as="geometry" />
+        </mxCell>
+        <mxCell id="openclaw" value="OpenClaw gateway&lt;br&gt;&lt;font style=&quot;font-size:11px&quot;&gt;Context assembly&lt;br&gt;model/tool loop&lt;br&gt;OpenShell plugin&lt;/font&gt;" style="rounded=1;whiteSpace=wrap;html=1;fillColor=#DBEAFE;strokeColor=#2563EB;strokeWidth=2;fontColor=#1E3A8A;fontSize=14;align=center;verticalAlign=middle;" vertex="1" parent="runtime">
+          <mxGeometry x="35" y="75" width="210" height="145" as="geometry" />
+        </mxCell>
+        <mxCell id="mock" value="Mock LLM service&lt;br&gt;&lt;font style=&quot;font-size:11px&quot;&gt;OpenAI-compatible API&lt;br&gt;replays recorded model responses&lt;br&gt;controlled timing&lt;/font&gt;" style="rounded=1;whiteSpace=wrap;html=1;fillColor=#DCFCE7;strokeColor=#16A34A;strokeWidth=2;fontColor=#14532D;fontSize=14;align=center;verticalAlign=middle;" vertex="1" parent="runtime">
+          <mxGeometry x="315" y="75" width="220" height="145" as="geometry" />
+        </mxCell>
+        <mxCell id="openshell" value="OpenShell gateway&lt;br&gt;&lt;font style=&quot;font-size:11px&quot;&gt;Sandbox control plane&lt;br&gt;provision / reuse sandbox&lt;/font&gt;" style="rounded=1;whiteSpace=wrap;html=1;fillColor=#F3E8FF;strokeColor=#7C3AED;strokeWidth=2;fontColor=#4C1D95;fontSize=14;align=center;verticalAlign=middle;" vertex="1" parent="runtime">
+          <mxGeometry x="605" y="75" width="210" height="145" as="geometry" />
+        </mxCell>
+        <mxCell id="sandbox" value="Agent sandbox&lt;br&gt;&lt;font style=&quot;font-size:11px&quot;&gt;Mapped bash / tool execution&lt;br&gt;recorded tool result returned&lt;/font&gt;" style="rounded=1;whiteSpace=wrap;html=1;fillColor=#F3E8FF;strokeColor=#7C3AED;strokeWidth=2;fontColor=#4C1D95;fontSize=14;align=center;verticalAlign=middle;" vertex="1" parent="runtime">
+          <mxGeometry x="885" y="75" width="195" height="145" as="geometry" />
+        </mxCell>
+
+        <mxCell id="plain" value="MATCHED BASELINE&lt;br&gt;&lt;font style=&quot;font-size:11px&quot;&gt;Plain OpenClaw with the same task&lt;br&gt;OpenShell disabled&lt;/font&gt;" style="rounded=1;whiteSpace=wrap;html=1;fillColor=#FFEDD5;strokeColor=#C2410C;strokeWidth=2;fontColor=#7C2D12;fontSize=14;align=center;verticalAlign=middle;" vertex="1" parent="1">
+          <mxGeometry x="250" y="635" width="250" height="90" as="geometry" />
+        </mxCell>
+        <mxCell id="matched" value="Matched comparison&lt;br&gt;&lt;font style=&quot;font-size:11px&quot;&gt;Only equal internal step counts&lt;br&gt;produce incremental overhead plot&lt;/font&gt;" style="rounded=1;whiteSpace=wrap;html=1;fillColor=#FFF7ED;strokeColor=#FB923C;dashed=1;fontColor=#7C2D12;fontSize=13;align=center;verticalAlign=middle;" vertex="1" parent="1">
+          <mxGeometry x="555" y="635" width="250" height="90" as="geometry" />
+        </mxCell>
+        <mxCell id="mockBaseline" value="Same mock LLM&lt;br&gt;&lt;font style=&quot;font-size:11px&quot;&gt;Same recorded model responses&lt;/font&gt;" style="rounded=1;whiteSpace=wrap;html=1;fillColor=#DCFCE7;strokeColor=#16A34A;fontColor=#14532D;fontSize=13;align=center;verticalAlign=middle;" vertex="1" parent="1">
+          <mxGeometry x="860" y="635" width="220" height="90" as="geometry" />
+        </mxCell>
+
+        <mxCell id="otel" value="Observability&lt;br&gt;&lt;font style=&quot;font-size:11px&quot;&gt;OpenTelemetry → Jaeger&lt;br&gt;run, model, context, tool, exec spans&lt;/font&gt;" style="rounded=1;whiteSpace=wrap;html=1;fillColor=#E0E7FF;strokeColor=#4F46E5;strokeWidth=2;fontColor=#312E81;fontSize=14;align=center;verticalAlign=middle;" vertex="1" parent="1">
+          <mxGeometry x="1215" y="300" width="175" height="110" as="geometry" />
+        </mxCell>
+        <mxCell id="resources" value="Resources&lt;br&gt;&lt;font style=&quot;font-size:11px&quot;&gt;Prometheus/cAdvisor&lt;br&gt;100 ms cgroup cross-check&lt;br&gt;CPU + memory&lt;/font&gt;" style="rounded=1;whiteSpace=wrap;html=1;fillColor=#E0E7FF;strokeColor=#4F46E5;strokeWidth=2;fontColor=#312E81;fontSize=14;align=center;verticalAlign=middle;" vertex="1" parent="1">
+          <mxGeometry x="1215" y="455" width="175" height="110" as="geometry" />
+        </mxCell>
+        <mxCell id="analysis" value="Analysis&lt;br&gt;&lt;font style=&quot;font-size:11px&quot;&gt;Per-turn JSON/CSV&lt;br&gt;waterfall + turn metrics&lt;br&gt;resource statistics&lt;/font&gt;" style="rounded=1;whiteSpace=wrap;html=1;fillColor=#F1F5F9;strokeColor=#475569;strokeWidth=2;fontColor=#0F172A;fontSize=14;align=center;verticalAlign=middle;" vertex="1" parent="1">
+          <mxGeometry x="1215" y="610" width="175" height="110" as="geometry" />
+        </mxCell>
+        <mxCell id="artifacts" value="Experiment artifacts&lt;br&gt;&lt;font style=&quot;font-size:11px&quot;&gt;plots-analysis&lt;br&gt;logs / data / manifests&lt;/font&gt;" style="rounded=1;whiteSpace=wrap;html=1;fillColor=#F1F5F9;strokeColor=#475569;fontColor=#0F172A;fontSize=14;align=center;verticalAlign=middle;" vertex="1" parent="1">
+          <mxGeometry x="1215" y="765" width="175" height="100" as="geometry" />
+        </mxCell>
+        <mxCell id="note" value="No live LLM calls and no GPU model. The replay isolates framework orchestration, context assembly, response processing, and sandbox overhead." style="rounded=1;whiteSpace=wrap;html=1;fillColor=#FEF2F2;strokeColor=#DC2626;dashed=1;fontColor=#7F1D1D;fontSize=13;align=center;verticalAlign=middle;" vertex="1" parent="1">
+          <mxGeometry x="55" y="790" width="1025" height="75" as="geometry" />
+        </mxCell>
+
+        <mxCell id="a1" value="ingest" style="edgeStyle=orthogonalEdgeStyle;rounded=0;jettySize=auto;html=1;endArrow=block;strokeColor=#D97706;strokeWidth=2;" edge="1" parent="1" source="dataset" target="corpus"><mxGeometry relative="1" as="geometry" /></mxCell>
+        <mxCell id="a2" value="task corpus" style="edgeStyle=orthogonalEdgeStyle;rounded=0;jettySize=auto;html=1;endArrow=block;strokeColor=#2563EB;strokeWidth=2;" edge="1" parent="1" source="corpus" target="driver"><mxGeometry relative="1" as="geometry" /></mxCell>
+        <mxCell id="a3" value="HTTP request" style="edgeStyle=orthogonalEdgeStyle;rounded=0;jettySize=auto;html=1;endArrow=block;strokeColor=#2563EB;strokeWidth=2;" edge="1" parent="1" source="driver" target="openclaw"><mxGeometry relative="1" as="geometry" /></mxCell>
+        <mxCell id="a4" value="model request" style="edgeStyle=orthogonalEdgeStyle;rounded=0;jettySize=auto;html=1;endArrow=block;strokeColor=#16A34A;strokeWidth=2;" edge="1" parent="1" source="openclaw" target="mock"><mxGeometry relative="1" as="geometry" /></mxCell>
+        <mxCell id="a5" value="tool / exec" style="edgeStyle=orthogonalEdgeStyle;rounded=0;jettySize=auto;html=1;endArrow=block;strokeColor=#7C3AED;strokeWidth=2;" edge="1" parent="1" source="openclaw" target="openshell"><mxGeometry relative="1" as="geometry" /></mxCell>
+        <mxCell id="a6" value="mapped command" style="edgeStyle=orthogonalEdgeStyle;rounded=0;jettySize=auto;html=1;endArrow=block;strokeColor=#7C3AED;strokeWidth=2;" edge="1" parent="1" source="openshell" target="sandbox"><mxGeometry relative="1" as="geometry" /></mxCell>
+        <mxCell id="a7" value="recorded tool result" style="edgeStyle=orthogonalEdgeStyle;rounded=0;jettySize=auto;html=1;endArrow=block;dashed=1;strokeColor=#7C3AED;strokeWidth=2;" edge="1" parent="1" source="sandbox" target="openclaw"><mxGeometry relative="1" as="geometry" /></mxCell>
+        <mxCell id="a8" value="same task" style="edgeStyle=orthogonalEdgeStyle;rounded=0;jettySize=auto;html=1;endArrow=block;strokeColor=#C2410C;strokeWidth=2;" edge="1" parent="1" source="driver" target="plain"><mxGeometry relative="1" as="geometry" /></mxCell>
+        <mxCell id="a9" value="recorded response" style="edgeStyle=orthogonalEdgeStyle;rounded=0;jettySize=auto;html=1;endArrow=block;strokeColor=#16A34A;strokeWidth=2;" edge="1" parent="1" source="plain" target="mockBaseline"><mxGeometry relative="1" as="geometry" /></mxCell>
+        <mxCell id="a10" value="OTLP spans" style="edgeStyle=orthogonalEdgeStyle;rounded=0;jettySize=auto;html=1;endArrow=block;dashed=1;strokeColor=#4F46E5;strokeWidth=2;" edge="1" parent="1" source="openclaw" target="otel"><mxGeometry relative="1" as="geometry" /></mxCell>
+        <mxCell id="a11" value="CPU / memory" style="edgeStyle=orthogonalEdgeStyle;rounded=0;jettySize=auto;html=1;endArrow=block;dashed=1;strokeColor=#4F46E5;strokeWidth=2;" edge="1" parent="1" source="runtime" target="resources"><mxGeometry relative="1" as="geometry" /></mxCell>
+        <mxCell id="a12" value="spans + metrics" style="edgeStyle=orthogonalEdgeStyle;rounded=0;jettySize=auto;html=1;endArrow=block;strokeColor=#475569;strokeWidth=2;" edge="1" parent="1" source="otel" target="analysis"><mxGeometry relative="1" as="geometry" /></mxCell>
+        <mxCell id="a13" value="resource data" style="edgeStyle=orthogonalEdgeStyle;rounded=0;jettySize=auto;html=1;endArrow=block;strokeColor=#475569;strokeWidth=2;" edge="1" parent="1" source="resources" target="analysis"><mxGeometry relative="1" as="geometry" /></mxCell>
+        <mxCell id="a14" value="JSON / CSV / PNG" style="edgeStyle=orthogonalEdgeStyle;rounded=0;jettySize=auto;html=1;endArrow=block;strokeColor=#475569;strokeWidth=2;" edge="1" parent="1" source="analysis" target="artifacts"><mxGeometry relative="1" as="geometry" /></mxCell>
+      </root>
+    </mxGraphModel>
+  </diagram>
+</mxfile>

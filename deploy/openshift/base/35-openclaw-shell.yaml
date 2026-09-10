@@ -1,0 +1,344 @@
+apiVersion: v1
+kind: Secret
+metadata:
+  name: openclaw-secrets
+  namespace: trace-replay
+stringData:
+  OPENCLAW_GATEWAY_TOKEN: replace-me
+---
+apiVersion: v1
+kind: ConfigMap
+metadata:
+  name: openclaw-agent
+  namespace: trace-replay
+data:
+  AGENTS.md: |
+    # Perf Agent
+    You are a performance-test agent. Answer the user request directly.
+    Do not ask clarifying questions. Keep answers short.
+---
+apiVersion: v1
+kind: ConfigMap
+metadata:
+  name: openclaw-shell-config
+  namespace: trace-replay
+  labels:
+    app: openclaw-shell
+data:
+  openclaw.json: |
+    {
+      "plugins": {
+        "allow": ["diagnostics-prometheus", "diagnostics-otel", "openshell"],
+        "entries": {
+          "diagnostics-prometheus": {"enabled": true},
+          "diagnostics-otel": {"enabled": true},
+          "openshell": {
+            "enabled": true,
+            "config": {
+              "command": "/opt/openshell/bin/openshell",
+              "from": "quay.io/example/openclaw-openshell-sandbox:replace-me",
+              "mode": "remote",
+              "gatewayEndpoint": "http://openshell.openshell-tracesim.svc.cluster.local:8080",
+              "remoteWorkspaceDir": "/sandbox",
+              "remoteAgentWorkspaceDir": "/agent",
+              "timeoutSeconds": 180
+            }
+          }
+        }
+      },
+      "diagnostics": {
+        "enabled": true,
+        "otel": {
+          "enabled": true,
+          "endpoint": "http://jaeger.trace-replay.svc.cluster.local:4318",
+          "protocol": "http/protobuf",
+          "serviceName": "openclaw-gateway-shell",
+          "traces": true,
+          "metrics": true,
+          "logs": false,
+          "sampleRate": 1.0,
+          "flushIntervalMs": 5000
+        }
+      },
+      "gateway": {
+        "mode": "local",
+        "auth": {
+          "mode": "token",
+          "token": "replace-me"
+        },
+        "http": {
+          "endpoints": {
+            "chatCompletions": {"enabled": true},
+            "responses": {"enabled": true}
+          }
+        }
+      },
+      "models": {
+        "catalogRefresh": {"enabled": false},
+        "providers": {
+          "endpoint": {
+            "baseUrl": "http://mock-llm.trace-replay.svc.cluster.local:8080/v1",
+            "api": "openai-completions",
+            "models": [
+              {"id": "replay", "name": "Replay mock LLM"}
+            ]
+          }
+        }
+      },
+      "agents": {
+        "defaults": {
+          "workspace": "~/.openclaw/workspace",
+          "model": {"primary": "endpoint/replay"},
+          "models": {
+            "endpoint/replay": {
+              "alias": "replay",
+              "params": { "contextLength": 32768, "maxTokens": 8192 }
+            }
+          },
+          "sandbox": {
+            "mode": "all",
+            "backend": "openshell",
+            "scope": "agent",
+            "workspaceAccess": "rw"
+          }
+        },
+        "list": [
+          {
+            "id": "perf_agent",
+            "name": "Perf Agent",
+            "identity": {"name": "Perf Agent"},
+            "workspace": "~/.openclaw/workspace-perf_agent",
+            "model": {"primary": "endpoint/replay"},
+            "sandbox": {
+              "mode": "all",
+              "backend": "openshell",
+              "scope": "agent",
+              "workspaceAccess": "rw"
+            },
+            "tools": {
+              "allow": ["exec", "group:fs", "group:sessions", "group:memory", "group:runtime"],
+              "sandbox": {
+                "tools": {
+                  "allow": ["exec", "group:fs", "group:sessions", "group:memory", "group:runtime"]
+                }
+              }
+            }
+          }
+        ]
+      }
+    }
+---
+apiVersion: v1
+kind: PersistentVolumeClaim
+metadata:
+  name: openclaw-shell-home-pvc
+  namespace: trace-replay
+spec:
+  accessModes: ["ReadWriteOnce"]
+  resources:
+    requests:
+      storage: 10Gi
+---
+apiVersion: apps/v1
+kind: Deployment
+metadata:
+  name: openclaw-shell
+  namespace: trace-replay
+  labels:
+    app: openclaw-shell
+spec:
+  replicas: 1
+  strategy:
+    type: Recreate
+  selector:
+    matchLabels:
+      app: openclaw-shell
+  template:
+    metadata:
+      labels:
+        app: openclaw-shell
+    spec:
+      imagePullSecrets:
+        - name: quay-pull
+      initContainers:
+        - name: install-openshell-cli
+          image: python:3.12-slim
+          env:
+            - name: OPENSHELL_CLI_VERSION
+              value: replace-me
+          command: ["python3", "-c"]
+          args:
+            - |
+              import io, os, sys, tarfile, urllib.request, subprocess
+              subprocess.check_call([sys.executable, "-m", "pip", "install", "--quiet", "--target=/tmp/py", "zstandard"])
+              sys.path.insert(0, "/tmp/py")
+              import zstandard
+              ver = os.environ["OPENSHELL_CLI_VERSION"]
+              arch = "amd64"
+              url = f"https://github.com/NVIDIA/OpenShell/releases/download/v{ver}/openshell_{ver}-1_{arch}.deb"
+              dest_dir = "/opt/openshell/bin"
+              dest = os.path.join(dest_dir, "openshell")
+              os.makedirs(dest_dir, exist_ok=True)
+              print("fetch", url, flush=True)
+              urllib.request.urlretrieve(url, "/tmp/openshell.deb")
+              with open("/tmp/openshell.deb", "rb") as f:
+                  magic = f.read(8)
+                  if magic != b"!<arch>\n":
+                      raise SystemExit("not a deb")
+                  data = None
+                  while True:
+                      header = f.read(60)
+                      if len(header) < 60:
+                          break
+                      name = header[0:16].decode().strip()
+                      size = int(header[48:58].decode().strip())
+                      payload = f.read(size)
+                      if size % 2:
+                          f.read(1)
+                      if "data.tar" in name:
+                          data = payload
+                          print("member", name, flush=True)
+                          break
+              if not data:
+                  raise SystemExit("no data.tar in deb")
+              if data.startswith(b"\x1f\x8b"):
+                  tf = tarfile.open(fileobj=io.BytesIO(data), mode="r:gz")
+              elif data.startswith(b"\xfd7zXZ"):
+                  tf = tarfile.open(fileobj=io.BytesIO(data), mode="r:xz")
+              else:
+                  raw = zstandard.ZstdDecompressor().stream_reader(io.BytesIO(data)).read()
+                  tf = tarfile.open(fileobj=io.BytesIO(raw), mode="r:")
+              found = False
+              for member in tf.getmembers():
+                  if not member.isfile():
+                      continue
+                  if member.name.endswith("usr/bin/openshell") or member.name.endswith("/openshell"):
+                      src = tf.extractfile(member)
+                      with open(dest, "wb") as out:
+                          out.write(src.read())
+                      os.chmod(dest, 0o755)
+                      found = True
+                      break
+              if not found:
+                  raise SystemExit("openshell binary missing in deb")
+              print("installed", dest, flush=True)
+          volumeMounts:
+            - mountPath: /opt/openshell
+              name: openshell-cli
+        - name: init-config
+          image: quay.io/example/openclaw:replace-me
+          imagePullPolicy: Always
+          env:
+            - name: OPENCLAW_OPENSHELL_PLUGIN_VERSION
+              value: replace-me
+          command: ["sh", "-c"]
+          args:
+            - |
+              set -e
+              mkdir -p /home/node/.openclaw /home/node/.openclaw/tmp /home/node/.npm /home/node/.cache /home/node/.config
+              cp /config/openclaw.json /home/node/.openclaw/openclaw.json
+              mkdir -p /home/node/.openclaw/workspace-perf_agent/memory /home/node/.openclaw/workspace-perf_agent/skills
+              touch /home/node/.openclaw/workspace-perf_agent/.env
+              cp /agents/AGENTS.md /home/node/.openclaw/workspace-perf_agent/AGENTS.md 2>/dev/null || true
+              export HOME=/home/node OPENCLAW_CONFIG_DIR=/home/node/.openclaw OPENCLAW_STATE_DIR=/home/node/.openclaw
+              unset OPENCLAW_NIX_MODE
+              node openclaw.mjs plugins install @openclaw/diagnostics-prometheus 2>&1 || true
+              node openclaw.mjs plugins install @openclaw/diagnostics-otel 2>&1 || true
+               node openclaw.mjs plugins install @openclaw/openshell-sandbox@${OPENCLAW_OPENSHELL_PLUGIN_VERSION} --force
+              node openclaw.mjs doctor --fix 2>&1 || true
+               rm -f /home/node/.openclaw/openclaw.json.bak /home/node/.openclaw/openclaw.json.bak.* \
+                 /home/node/.openclaw/openclaw.json.last-good /home/node/.openclaw/*.last-good 2>/dev/null || true
+               cp /config/openclaw.json /home/node/.openclaw/openclaw.json
+               chown -R 1000:0 /home/node/.openclaw 2>/dev/null || true
+          volumeMounts:
+            - mountPath: /home/node
+              name: openclaw-shell-home
+            - mountPath: /config
+              name: config-template
+            - mountPath: /agents
+              name: agent-config
+            - mountPath: /opt/openshell
+              name: openshell-cli
+      containers:
+        - name: gateway
+          image: quay.io/example/openclaw:replace-me
+          imagePullPolicy: Always
+          command: ["sh", "-c"]
+          args:
+            - |
+              set -e
+              export PATH=/opt/openshell/bin:$PATH
+              umask 007
+              mkdir -p /home/node/.config/openshell/gateways/openshell/mtls
+              cp /openshell-mtls/ca.crt /openshell-mtls/tls.crt /openshell-mtls/tls.key /home/node/.config/openshell/gateways/openshell/mtls/
+              chmod 600 /home/node/.config/openshell/gateways/openshell/mtls/tls.key
+              EP="http://openshell.openshell-tracesim.svc.cluster.local:8080"
+              /opt/openshell/bin/openshell gateway remove openshell >/dev/null 2>&1 || true
+              /opt/openshell/bin/openshell gateway add "$EP" --local --name openshell
+              exec node openclaw.mjs gateway run --bind lan --port 18790
+          env:
+            - name: HOME
+              value: /home/node
+            - name: TMPDIR
+              value: /home/node/.openclaw/tmp
+            - name: NODE_ENV
+              value: production
+            - name: OPENCLAW_CONFIG_DIR
+              value: /home/node/.openclaw
+            - name: OPENCLAW_STATE_DIR
+              value: /home/node/.openclaw
+            - name: OPENCLAW_GATEWAY_TOKEN
+              valueFrom:
+                secretKeyRef:
+                  name: openclaw-secrets
+                  key: OPENCLAW_GATEWAY_TOKEN
+            - name: MOCK_LLM_URL
+              value: "http://mock-llm.trace-replay.svc.cluster.local:8080"
+          ports:
+            - containerPort: 18790
+              name: gateway
+          readinessProbe:
+            httpGet:
+              path: /
+              port: gateway
+            initialDelaySeconds: 60
+            periodSeconds: 10
+            failureThreshold: 6
+          volumeMounts:
+            - mountPath: /home/node
+              name: openclaw-shell-home
+            - mountPath: /opt/openshell
+              name: openshell-cli
+              readOnly: true
+            - mountPath: /openshell-mtls
+              name: openshell-mtls
+              readOnly: true
+      volumes:
+        - name: openshell-mtls
+          secret:
+            secretName: openshell-client-tls
+            defaultMode: 420
+        - name: openshell-cli
+          emptyDir: {}
+        - name: openclaw-shell-home
+          persistentVolumeClaim:
+            claimName: openclaw-shell-home-pvc
+        - name: config-template
+          configMap:
+            name: openclaw-shell-config
+        - name: agent-config
+          configMap:
+            name: openclaw-agent
+---
+apiVersion: v1
+kind: Service
+metadata:
+  name: openclaw-shell
+  namespace: trace-replay
+spec:
+  selector:
+    app: openclaw-shell
+  ports:
+    - name: gateway
+      port: 18790
+      targetPort: 18790

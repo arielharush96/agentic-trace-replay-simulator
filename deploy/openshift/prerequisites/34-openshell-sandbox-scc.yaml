@@ -1,0 +1,47 @@
+# Minimal SCC for OpenShell sandbox pods on OpenShift.
+# OpenShell's supervisor sets up per-sandbox network namespaces, which requires
+# root + SYS_ADMIN/NET_ADMIN/SYS_PTRACE/SYSLOG. No built-in SCC except
+# `privileged` allows these caps; this SCC grants ONLY what the sandbox pod
+# needs, scoped to ONLY the one sandbox ServiceAccount. Tighter than privileged:
+# no privileged flag, no host namespaces, no hostPath.
+# Reversible: `oc delete -f 34-openshell-sandbox-scc.yaml`.
+apiVersion: security.openshift.io/v1
+kind: SecurityContextConstraints
+metadata:
+  name: openshell-sandbox-scc
+allowPrivilegedContainer: false
+allowPrivilegeEscalation: true
+allowedCapabilities:
+  - SYS_ADMIN
+  - NET_ADMIN
+  - SYS_PTRACE
+  - SYSLOG
+defaultAddCapabilities: []
+requiredDropCapabilities: []
+allowHostDirVolumePlugin: false
+allowHostNetwork: false
+allowHostPorts: false
+allowHostPID: false
+allowHostIPC: false
+readOnlyRootFilesystem: false
+runAsUser:
+  type: RunAsAny
+seLinuxContext:
+  type: MustRunAs
+fsGroup:
+  type: RunAsAny
+supplementalGroups:
+  type: RunAsAny
+seccompProfiles:
+  - "*"
+volumes:
+  - configMap
+  - csi
+  - downwardAPI
+  - emptyDir
+  - ephemeral
+  - persistentVolumeClaim
+  - projected
+  - secret
+users:
+  - system:serviceaccount:openshell-tracesim:openshell-openshell-tracesim-sandbox

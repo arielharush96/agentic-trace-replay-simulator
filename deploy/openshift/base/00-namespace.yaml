@@ -1,0 +1,13 @@
+apiVersion: v1
+kind: Namespace
+metadata:
+  name: trace-replay
+  labels:
+    app.kubernetes.io/part-of: trace-replay-benchmark
+---
+apiVersion: v1
+kind: Namespace
+metadata:
+  name: openshell-tracesim
+  labels:
+    app.kubernetes.io/part-of: trace-replay-benchmark

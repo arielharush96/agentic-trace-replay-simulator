@@ -1,0 +1,30 @@
+[build-system]
+requires = ["setuptools>=68", "wheel"]
+build-backend = "setuptools.build_meta"
+
+[project]
+name = "trace-replay-benchmark"
+version = "0.1.0"
+description = "Deterministic multi-step agent performance benchmarking on OpenShift with OpenClaw and OpenShell"
+readme = "README.md"
+requires-python = ">=3.11"
+dependencies = [
+  "huggingface_hub>=0.23",
+  "datasets>=2.20",
+  "pyarrow>=15",
+]
+
+[project.optional-dependencies]
+dev = ["pytest>=8.0"]
+analyze = ["matplotlib>=3.8", "numpy>=1.26"]
+
+[project.scripts]
+trace-replay-sim = "trace_replay_sim.cli:main"
+trace-replay-benchmark = "trace_replay_sim.cli:main"
+
+[tool.setuptools.packages.find]
+where = ["src"]
+
+[tool.pytest.ini_options]
+testpaths = ["tests"]
+pythonpath = ["src"]

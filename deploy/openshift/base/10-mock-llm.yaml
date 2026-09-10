@@ -1,0 +1,99 @@
+apiVersion: apps/v1
+kind: Deployment
+metadata:
+  name: mock-llm
+  namespace: trace-replay
+  labels:
+    app: mock-llm
+spec:
+  replicas: 1
+  selector:
+    matchLabels:
+      app: mock-llm
+  template:
+    metadata:
+      labels:
+        app: mock-llm
+    spec:
+      containers:
+        - name: mock-llm
+          image: python:3.12-slim
+          imagePullPolicy: Always
+          command: ["python", "/app/mock_llm.py"]
+          env:
+            - name: MOCK_LLM_HOST
+              value: "0.0.0.0"
+            - name: MOCK_LLM_PORT
+              value: "8080"
+            - name: REPLAY_CORPUS
+              value: /data/replay.json
+            - name: REPLAY_MODE
+              value: turns
+            # Model time = TTFT + (out_tokens-1)*ITL, both from this named profile.
+            # 'humaneval-vllm-c1' = the 8xA100 baseline's measured (TTFT 51ms, ITL 16.8ms)
+            # so C/E are directly comparable to the ground-truth anchors.
+            - name: REPLAY_TIMING
+              value: humaneval-vllm-c1
+            # Do not invent reasoning tokens: the replay traces do not contain
+            # reasoning-token counts. This keeps D as measured gateway/tool
+            # processing while E varies with each recorded output token count.
+            - name: MOCK_REASONING_TOKENS
+              value: "0"
+            - name: MOCK_REASONING_MODE
+              value: think_tags
+            # Prefix-cache-aware prefill: cold turn-0 prefills the whole assembled
+            # context, warm turns only the per-turn delta (default ON in code).
+            - name: MOCK_PREFILL_SCALING
+              value: "1"
+            - name: MAP_TOOLS_TO_SANDBOX
+              value: "1"
+            # Per-turn skew-free edge records; also emitted to stdout as MOCK_EDGE lines.
+            - name: MOCK_EDGES_PATH
+              value: /edges/mock_edges.jsonl
+            - name: OTLP_ENDPOINT
+              value: "http://jaeger.trace-replay.svc.cluster.local:4318"
+          ports:
+            - name: http
+              containerPort: 8080
+          readinessProbe:
+            httpGet:
+              path: /health
+              port: http
+            initialDelaySeconds: 3
+            periodSeconds: 5
+          resources:
+            requests:
+              cpu: 200m
+              memory: 256Mi
+            limits:
+              cpu: "2"
+              memory: 1Gi
+          volumeMounts:
+            - name: src
+              mountPath: /app
+            - name: corpus
+              mountPath: /data
+            - name: edges
+              mountPath: /edges
+      volumes:
+        - name: src
+          configMap:
+            name: mock-llm-src
+        - name: corpus
+          configMap:
+            name: replay-corpus
+        - name: edges
+          emptyDir: {}
+---
+apiVersion: v1
+kind: Service
+metadata:
+  name: mock-llm
+  namespace: trace-replay
+spec:
+  selector:
+    app: mock-llm
+  ports:
+    - name: http
+      port: 8080
+      targetPort: 8080

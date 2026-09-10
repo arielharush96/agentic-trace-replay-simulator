@@ -1,0 +1,10 @@
+apiVersion: kustomize.config.k8s.io/v1beta1
+kind: Kustomization
+resources:
+  - 00-namespace.yaml
+  - 10-mock-llm.yaml
+  - 20-jaeger.yaml
+  - 30-openclaw.yaml
+  - 34-openshell-sandbox-scc.yaml
+  - 35-openclaw-shell.yaml
+  - 50-monitoring.yaml

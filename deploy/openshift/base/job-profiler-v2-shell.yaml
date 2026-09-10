@@ -1,0 +1,47 @@
+apiVersion: batch/v1
+kind: Job
+metadata:
+  name: trace-replay-profiler-v2-shell
+  namespace: trace-replay
+spec:
+  backoffLimit: 0
+  ttlSecondsAfterFinished: 7200
+  template:
+    spec:
+      restartPolicy: Never
+      containers:
+        - name: driver
+          image: python:3.12-slim
+          command: ["python", "/app/driver.py"]
+          args:
+            - --corpus
+            - /data/replay.json
+            - --out
+            - /results
+            - --layer
+            - shell
+            - --url
+            - http://openclaw-shell.trace-replay.svc.cluster.local:18790
+            - --model
+            - openclaw/perf_agent
+            - --token
+            - replace-me
+            - --timeout
+            - "900"
+            - --stream
+          volumeMounts:
+            - name: src
+              mountPath: /app
+            - name: corpus
+              mountPath: /data
+            - name: results
+              mountPath: /results
+      volumes:
+        - name: src
+          configMap:
+            name: profiler-v2-driver-src
+        - name: corpus
+          configMap:
+            name: profiler-v2-corpus
+        - name: results
+          emptyDir: {}

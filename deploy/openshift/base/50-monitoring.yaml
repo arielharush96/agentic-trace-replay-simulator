@@ -1,0 +1,109 @@
+# 1. Secret in openshift-monitoring with additional scrape jobs at 1s for trace-replay targets.
+#    This adds HIGH-RESOLUTION jobs on top of the platform's global 30s scrape interval
+#    without changing any existing scrape configs.
+#
+# Jobs added at 1s:
+#   openclaw-app-1s        — OpenClaw (no-shell layer) Prometheus endpoint on :18789
+#                            (tool_execution, model_call, queue_wait, session_state, memory).
+#   openclaw-shell-app-1s  — OpenClaw+OpenShell layer Prometheus endpoint on :18790, so the
+#                            two compared layers have SYMMETRIC observability.
+#   cadvisor-tracens  — cAdvisor container CPU/memory for the trace-replay namespace only,
+#                       scraped from each node's kubelet at 1s and filtered by namespace label.
+apiVersion: v1
+kind: Secret
+metadata:
+  name: trace-replay-additional-scrape
+  namespace: openshift-monitoring
+stringData:
+  trace-replay.yaml: |
+    - job_name: openclaw-app-1s
+      scrape_interval: 1s
+      scrape_timeout: 1s
+      metrics_path: /api/diagnostics/prometheus
+      authorization:
+        credentials: "replace-me"
+      static_configs:
+        - targets:
+            - "openclaw.trace-replay.svc.cluster.local:18789"
+          labels:
+            namespace: trace-replay
+            pod: openclaw
+
+    - job_name: openclaw-shell-app-1s
+      scrape_interval: 1s
+      scrape_timeout: 1s
+      metrics_path: /api/diagnostics/prometheus
+      authorization:
+        credentials: "replace-me"
+      static_configs:
+        - targets:
+            - "openclaw-shell.trace-replay.svc.cluster.local:18790"
+          labels:
+            namespace: trace-replay
+            pod: openclaw-shell
+
+    - job_name: cadvisor-tracens-1s
+      scrape_interval: 1s
+      scrape_timeout: 1s
+      honor_labels: true
+      metrics_path: /metrics/cadvisor
+      scheme: https
+      tls_config:
+        insecure_skip_verify: true
+      authorization:
+        type: Bearer
+        credentials_file: /var/run/secrets/kubernetes.io/serviceaccount/token
+      kubernetes_sd_configs:
+        - role: node
+      relabel_configs:
+        # scrape all nodes (kubelet exposes cAdvisor)
+        - source_labels: [__address__]
+          regex: '(.+):(.+)'
+          replacement: '${1}:10250'
+          target_label: __address__
+        - action: labelmap
+          regex: __meta_kubernetes_node_label_(.+)
+      # Keep both the OpenClaw workload and the OpenShell control-plane/sandbox
+      # namespace so v2 resource plots have a complete time series.
+      metric_relabel_configs:
+        - source_labels: [namespace]
+          regex: "trace-replay|openshell-tracesim"
+          action: keep
+---
+# 2. Patch cluster-monitoring-config to reference the secret above.
+#    If cluster-monitoring-config already exists with other settings,
+#    run_experiment.sh merges this field with oc patch instead of replacing.
+#    This file is NOT applied directly — run_experiment.sh handles the patch.
+#
+# Shape of the patch (applied by run_experiment.sh):
+#   prometheusK8s:
+#     additionalScrapeConfigs:
+#       name: trace-replay-additional-scrape
+#       key: trace-replay.yaml
+#
+# Stored here as a reference ConfigMap so the shape is version-controlled.
+apiVersion: v1
+kind: ConfigMap
+metadata:
+  name: trace-replay-monitoring-patch-ref
+  namespace: trace-replay
+  annotations:
+    note: "Reference only. run_experiment.sh applies the actual patch to cluster-monitoring-config."
+data:
+  patch.yaml: |
+    prometheusK8s:
+      additionalScrapeConfigs:
+        name: trace-replay-additional-scrape
+        key: trace-replay.yaml
+---
+# 3. Enable user workload monitoring with 5s scrape interval (platform minimum).
+apiVersion: v1
+kind: ConfigMap
+metadata:
+  name: user-workload-monitoring-config
+  namespace: openshift-user-workload-monitoring
+data:
+  config.yaml: |
+    prometheus:
+      scrapeInterval: 5s
+      evaluationInterval: 5s

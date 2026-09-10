@@ -1,0 +1,216 @@
+apiVersion: v1
+kind: Secret
+metadata:
+  name: openclaw-secrets
+  namespace: trace-replay
+stringData:
+  OPENCLAW_GATEWAY_TOKEN: replace-me
+---
+apiVersion: v1
+kind: ConfigMap
+metadata:
+  name: openclaw-agent
+  namespace: trace-replay
+data:
+  AGENTS.md: |
+    # Perf Agent
+    You are a performance-test agent. Answer the user request directly.
+    Do not ask clarifying questions. Keep answers short.
+---
+apiVersion: v1
+kind: ConfigMap
+metadata:
+  name: openclaw-config
+  namespace: trace-replay
+  labels:
+    app: openclaw
+data:
+  openclaw.json: |
+    {
+      "plugins": {
+        "allow": ["diagnostics-prometheus", "diagnostics-otel"],
+        "entries": {
+          "diagnostics-prometheus": {"enabled": true},
+          "diagnostics-otel": {"enabled": true}
+        }
+      },
+      "diagnostics": {
+        "enabled": true,
+        "otel": {
+          "enabled": true,
+          "endpoint": "http://jaeger.trace-replay.svc.cluster.local:4318",
+          "protocol": "http/protobuf",
+          "serviceName": "openclaw-gateway",
+          "traces": true,
+          "metrics": true,
+          "logs": false,
+          "sampleRate": 1.0,
+          "flushIntervalMs": 5000
+        }
+      },
+      "gateway": {
+        "mode": "local",
+        "auth": {
+          "mode": "token",
+          "token": "replace-me"
+        },
+        "http": {
+          "endpoints": {
+            "chatCompletions": {"enabled": true},
+            "responses": {"enabled": true}
+          }
+        }
+      },
+      "models": {
+        "catalogRefresh": {"enabled": false},
+        "providers": {
+          "endpoint": {
+            "baseUrl": "http://mock-llm.trace-replay.svc.cluster.local:8080/v1",
+            "api": "openai-completions",
+            "models": [
+              {"id": "replay", "name": "Replay mock LLM"}
+            ]
+          }
+        }
+      },
+      "agents": {
+        "defaults": {
+          "workspace": "~/.openclaw/workspace",
+          "model": {"primary": "endpoint/replay"},
+          "models": {
+            "endpoint/replay": {"alias": "replay"}
+          }
+        },
+        "list": [
+          {
+            "id": "perf_agent",
+            "name": "Perf Agent",
+            "identity": {"name": "Perf Agent"},
+            "workspace": "~/.openclaw/workspace-perf_agent",
+            "model": {"primary": "endpoint/replay"},
+            "tools": {
+              "allow": ["group:fs", "group:sessions", "group:memory", "group:runtime"]
+            }
+          }
+        ]
+      }
+    }
+---
+apiVersion: v1
+kind: PersistentVolumeClaim
+metadata:
+  name: openclaw-home-pvc
+  namespace: trace-replay
+spec:
+  accessModes: ["ReadWriteOnce"]
+  resources:
+    requests:
+      storage: 10Gi
+---
+apiVersion: apps/v1
+kind: Deployment
+metadata:
+  name: openclaw
+  namespace: trace-replay
+  labels:
+    app: openclaw
+spec:
+  replicas: 1
+  strategy:
+    type: Recreate
+  selector:
+    matchLabels:
+      app: openclaw
+  template:
+    metadata:
+      labels:
+        app: openclaw
+    spec:
+      imagePullSecrets:
+        - name: quay-pull
+      initContainers:
+        - name: init-config
+          image: quay.io/example/openclaw:replace-me
+          imagePullPolicy: Always
+          command: ["sh", "-c"]
+          args:
+            - |
+              set -e
+              mkdir -p /home/node/.openclaw /home/node/.openclaw/tmp /home/node/.npm /home/node/.cache /home/node/.config
+              cp /config/openclaw.json /home/node/.openclaw/openclaw.json
+              mkdir -p /home/node/.openclaw/workspace-perf_agent/memory /home/node/.openclaw/workspace-perf_agent/skills
+              touch /home/node/.openclaw/workspace-perf_agent/.env
+              cp /agents/AGENTS.md /home/node/.openclaw/workspace-perf_agent/AGENTS.md 2>/dev/null || true
+              export HOME=/home/node OPENCLAW_CONFIG_DIR=/home/node/.openclaw OPENCLAW_STATE_DIR=/home/node/.openclaw
+              node openclaw.mjs plugins install @openclaw/diagnostics-prometheus 2>&1 || true
+              node openclaw.mjs plugins install @openclaw/diagnostics-otel 2>&1 || true
+              node openclaw.mjs doctor --fix 2>&1 || true
+              chown -R 1000:0 /home/node/.openclaw 2>/dev/null || true
+          volumeMounts:
+            - mountPath: /home/node
+              name: openclaw-home
+            - mountPath: /config
+              name: config-template
+            - mountPath: /agents
+              name: agent-config
+      containers:
+        - name: gateway
+          image: quay.io/example/openclaw:replace-me
+          imagePullPolicy: Always
+          command: ["sh", "-c"]
+          args:
+            - umask 007; exec node openclaw.mjs gateway run --bind lan --port 18789
+          env:
+            - name: HOME
+              value: /home/node
+            - name: TMPDIR
+              value: /home/node/.openclaw/tmp
+            - name: NODE_ENV
+              value: production
+            - name: OPENCLAW_CONFIG_DIR
+              value: /home/node/.openclaw
+            - name: OPENCLAW_STATE_DIR
+              value: /home/node/.openclaw
+            - name: OPENCLAW_GATEWAY_TOKEN
+              valueFrom:
+                secretKeyRef:
+                  name: openclaw-secrets
+                  key: OPENCLAW_GATEWAY_TOKEN
+            - name: MOCK_LLM_URL
+              value: "http://mock-llm.trace-replay.svc.cluster.local:8080"
+          ports:
+            - containerPort: 18789
+              name: gateway
+          readinessProbe:
+            httpGet:
+              path: /
+              port: gateway
+            initialDelaySeconds: 60
+            periodSeconds: 10
+            failureThreshold: 6
+          volumeMounts:
+            - mountPath: /home/node
+              name: openclaw-home
+      volumes:
+        - name: openclaw-home
+          persistentVolumeClaim:
+            claimName: openclaw-home-pvc
+        - name: config-template
+          configMap:
+            name: openclaw-config
+        - name: agent-config
+          configMap:
+            name: openclaw-agent
+---
+apiVersion: v1
+kind: Service
+metadata:
+  name: openclaw
+  namespace: trace-replay
+spec:
+  selector:
+    app: openclaw
+  ports:
+    - name: gateway
+      port: 18789
+      targetPort: 18789
