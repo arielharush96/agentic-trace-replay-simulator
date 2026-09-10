@@ -75,6 +75,24 @@ The generated corpus records its source dataset, selected session, hashes, and
 normalization decisions. A phantom all-zero turn may be removed; this is
 reported explicitly.
 
+## Live Demo: Reproduce One Trace
+
+This command reproduces the selected session
+`2a21e94e0687_32bdfa3a` from the HF dataset through the real OpenClaw and
+OpenShell path:
+
+```bash
+SESSION_ID=2a21e94e0687_32bdfa3a \
+TARGET_NODE=<approved-node> \
+KUBECONFIG=/path/to/kubeconfig \
+bash scripts/replay_hf_session.sh
+```
+
+The command downloads only the filtered corpus needed to find the session,
+creates the normalized replay corpus, runs it once, and writes a timestamped
+result directory containing plots, logs, data, manifests, and the exact
+reproduction command.
+
 ## OpenShift Run
 
 Copy the example configuration and fill in cluster-specific values:
