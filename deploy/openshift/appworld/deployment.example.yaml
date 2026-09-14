@@ -1,0 +1,54 @@
+apiVersion: apps/v1
+kind: Deployment
+metadata:
+  name: appworld
+  namespace: trace-replay
+spec:
+  replicas: 1
+  selector:
+    matchLabels:
+      app: appworld
+  template:
+    metadata:
+      labels:
+        app: appworld
+    spec:
+      containers:
+        - name: appworld
+          image: quay.io/example/appworld:replace-me
+          command: ["python", "/app/scripts/appworld_service.py"]
+          env:
+            - name: APPWORLD_ROOT
+              value: /appworld
+            - name: APPWORLD_TASK_MAP
+              value: /config/session-task-map.json
+          ports:
+            - name: http
+              containerPort: 8090
+          volumeMounts:
+            - name: appworld-data
+              mountPath: /appworld
+              readOnly: true
+            - name: task-map
+              mountPath: /config
+              readOnly: true
+      volumes:
+        - name: appworld-data
+          persistentVolumeClaim:
+            claimName: appworld-data
+        - name: task-map
+          secret:
+            secretName: appworld-session-task-map
+---
+apiVersion: v1
+kind: Service
+metadata:
+  name: appworld
+  namespace: trace-replay
+spec:
+  selector:
+    app: appworld
+  ports:
+    - name: http
+      port: 8090
+      targetPort: http

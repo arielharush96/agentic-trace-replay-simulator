@@ -17,6 +17,7 @@ dependencies = [
 [project.optional-dependencies]
 dev = ["pytest>=8.0"]
 analyze = ["matplotlib>=3.8", "numpy>=1.26"]
+appworld = ["appworld"]
 
 [project.scripts]
 trace-replay-sim = "trace_replay_sim.cli:main"

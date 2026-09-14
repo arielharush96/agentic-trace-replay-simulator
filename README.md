@@ -151,3 +151,10 @@ references, node, sampler configuration, and limitations.
 
 See [`docs/methodology.md`](docs/methodology.md) and
 [`docs/data-provenance.md`](docs/data-provenance.md).
+
+## Optional AppWorld Mode
+
+The default mode replays recorded tool results. An optional AppWorld-backed
+mode is documented in [`docs/appworld-backed.md`](docs/appworld-backed.md).
+It requires a separately installed AppWorld engine, its task-specific initial
+state, and an explicit session-to-task mapping. It is never enabled by default.
