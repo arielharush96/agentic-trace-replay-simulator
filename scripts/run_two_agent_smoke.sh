@@ -9,8 +9,8 @@ CORPUS=""
 OUT=""
 MODE=""
 MODE_COUNT=0
-KUBECONFIG_PATH="${KUBECONFIG:-/path/to/kubeconfig}"
-NODE="benchmark-node.example.invalid"
+KUBECONFIG_PATH="${KUBECONFIG:-$HOME/.kube/config}"
+NODE="${TARGET_NODE:-}"
 REUSE_AGENTS=0
 
 die() { echo "ERROR: $*" >&2; exit 2; }
@@ -35,6 +35,7 @@ done
 [[ -n "$CORPUS" ]] || die "--corpus is required"
 [[ -f "$CORPUS" ]] || die "corpus not found: $CORPUS"
 [[ "$MODE_COUNT" -eq 1 ]] || die "choose exactly one of --plan or --execute"
+[[ -n "$NODE" ]] || die "--node or TARGET_NODE is required"
 
 if [[ -z "$OUT" ]]; then
   RUN_STAMP="$(date -u '+%Y%m%d-%H%M%S')"

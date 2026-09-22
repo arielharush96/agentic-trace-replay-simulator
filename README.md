@@ -68,9 +68,17 @@ reported explicitly.
 
 ## OpenShift Run
 
+Cluster-specific values are supplied at runtime and are intentionally not
+stored in the repository. Set `KUBECONFIG` (or use the default kubeconfig),
+`TARGET_NODE`, and, when collecting monitoring data, `THANOS_HOST`. Set
+`OPENCLAW_TOKEN_SECRET` and optionally `OPENCLAW_TOKEN_SECRET_KEY` when the
+deployed OpenClaw endpoint requires authentication; the experiment mounts that
+Kubernetes Secret into driver Jobs without placing the token in command lines.
+Do not commit tokens or kubeconfig files.
+
 ## Live Trace Recording
 
-The repository also includesevent recorder for an
+The repository also includes a transport-neutral live event recorder for an
 OpenClaw plugin, gateway middleware, or sidecar. It writes redacted,
 timestamped `agent-event/v1` JSONL records for user requests, context assembly,
 model calls, tool calls/results, sandbox execution, and session completion. See
