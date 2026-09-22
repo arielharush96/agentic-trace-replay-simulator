@@ -4,8 +4,9 @@
 </p>
 
 Deterministic performance benchmarking for multi-step agentic workloads on
-OpenShift. The current integration measures **OpenClaw** and **OpenShell** with
+OpenShift. The current integration measures **OpenClaw as the agentic harness** and **OpenShell** with
 a controlled replay backend instead of live LLM inference.
+future work will allow to test any agentic harness, or testing with real inference.
 
 The benchmark replays recorded agent sessions from the public
 [`Exgentic/agent-llm-traces`](https://huggingface.co/datasets/Exgentic/agent-llm-traces)
@@ -15,20 +16,14 @@ sandbox portions of the execution.
 
 ## What It Measures
 
-```text
-Replay driver -> OpenClaw -> controlled mock LLM
-                         -> OpenShell -> agent sandbox
-```
 
-- OpenClaw harness and context assembly.
-- Model/tool loop orchestration.
+- agent harness context assembly.
+- Model or tool loop orchestration time.
 - OpenShell sandbox initialization and tool execution.
-- CPU and memory for the exact OpenClaw and sandbox containers.
+- CPU and memory for OpenClaw and OpenShell.
 - OpenTelemetry spans and per-step timing.
 
 The benchmark does **not** measure live model quality or live GPU inference.
-The mock LLM uses controlled replay timing. Do not compare its TTFT/ITL values
-directly with a production vLLM benchmark.
 
 ## Requirements
 
@@ -42,13 +37,6 @@ directly with a production vLLM benchmark.
 
 This repository does not install OpenShell or cluster-scoped operators.
 
-## Install
-
-```bash
-python3 -m venv .venv
-source .venv/bin/activate
-python -m pip install -e ".[dev,analyze]"
-```
 
 ## Corpus
 
@@ -77,24 +65,6 @@ trace-replay-sim corpus \
 The generated corpus records its source dataset, selected session, hashes, and
 normalization decisions. A phantom all-zero turn may be removed; this is
 reported explicitly.
-
-## Live Demo: Reproduce One Trace
-
-This command reproduces the selected session
-`2a21e94e0687_32bdfa3a` from the HF dataset through the real OpenClaw and
-OpenShell path:
-
-```bash
-SESSION_ID=2a21e94e0687_32bdfa3a \
-TARGET_NODE=<approved-node> \
-KUBECONFIG=/path/to/kubeconfig \
-bash scripts/replay_hf_session.sh
-```
-
-The command downloads only the filtered corpus needed to find the session,
-creates the normalized replay corpus, runs it once, and writes a timestamped
-result directory containing plots, logs, data, manifests, and the exact
-reproduction command.
 
 ## OpenShift Run
 
