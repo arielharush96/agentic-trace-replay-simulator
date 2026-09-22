@@ -29,6 +29,10 @@ python scripts/build_appworld_corpus.py \
   --endpoint http://appworld:8090/execute
 ```
 
+The adapter requires `APPWORLD_AUTH_TOKEN`; provide the same value to replay
+workers as `APPWORLD_API_TOKEN`. Keep both values in namespace-scoped Secrets
+or the runtime environment, never in the corpus or command history.
+
 This changes the mapped sandbox command. It does not change the recorded model
 decisions. The command invokes the AppWorld adapter, which calls the stateful
 AppWorld API and returns a newly generated result.

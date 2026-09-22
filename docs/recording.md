@@ -5,13 +5,15 @@ mock-LLM replay path. An OpenClaw plugin, gateway middleware, or sidecar sends
 JSON events to the collector endpoint:
 
 ```bash
+export TRACE_RECORDER_AUTH_TOKEN="set-this-outside-the-repository"
 PYTHONPATH=src python3 -m trace_replay_sim.live_recorder \
   --out results/live/events.jsonl \
-  --host 0.0.0.0 \
-  --port 8787
+  --host 127.0.0.1 \
+  --port 8787 \
+  --auth-token "$TRACE_RECORDER_AUTH_TOKEN"
 ```
 
-The collector accepts `POST /v1/events` and provides `GET /healthz`. Each event
+The collector accepts authenticated `POST /v1/events` and provides `GET /healthz`. Each event
 is normalized to `agent-event/v1` and contains an event ID, session ID, trace
 ID, optional turn index, monotonic timestamp, wall-clock timestamp, and a
 structured payload. Payloads are redacted before being written to disk; fields
@@ -41,3 +43,7 @@ and provide replay-relevant evidence for later corpus construction.
 Do not record production credentials or unrestricted sensitive content. Use a
 dedicated namespace, explicit retention, and review the JSONL output before
 sharing it.
+
+For a cluster deployment, keep the collector on a private Service, put the
+token in a Secret, and send `Authorization: Bearer <token>`. Do not expose the
+collector directly to the public internet.

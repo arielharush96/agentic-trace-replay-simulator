@@ -4,12 +4,18 @@
 from __future__ import annotations
 
 import argparse
+import hmac
 import json
 import os
+import re
 import threading
 import time
 from http.server import BaseHTTPRequestHandler, HTTPServer
 from pathlib import Path
+
+
+_SAFE_TOOL_COMPONENT = re.compile(r"^[a-z][a-z0-9_]*$")
+MAX_REQUEST_BYTES = 1_048_576
 
 
 class AppWorldAdapter:
@@ -78,6 +84,8 @@ class AppWorldAdapter:
             if len(parts) != 2:
                 return {"ok": False, "error": f"cannot map AppWorld tool: {name}"}
             app_name, api_name = parts
+            if not all(_SAFE_TOOL_COMPONENT.fullmatch(part) for part in (app_name, api_name)):
+                return {"ok": False, "error": f"invalid AppWorld tool component: {name}"}
             if app_name == "supervisor" and api_name == "complete_task":
                 expression = "response = apis.supervisor.complete_task(**arguments)"
             else:
@@ -116,9 +124,10 @@ def main() -> int:
     parser.add_argument("--port", type=int, default=8090)
     parser.add_argument("--root", default=os.environ.get("APPWORLD_ROOT", ""))
     parser.add_argument("--task-map", default=os.environ.get("APPWORLD_TASK_MAP", ""))
+    parser.add_argument("--auth-token", default=os.environ.get("APPWORLD_AUTH_TOKEN", ""))
     args = parser.parse_args()
-    if not args.root or not args.task_map:
-        raise SystemExit("APPWORLD_ROOT and APPWORLD_TASK_MAP are required")
+    if not args.root or not args.task_map or not args.auth_token:
+        raise SystemExit("APPWORLD_ROOT, APPWORLD_TASK_MAP, and APPWORLD_AUTH_TOKEN are required")
     adapter = AppWorldAdapter(args.root, args.task_map)
 
     class Handler(BaseHTTPRequestHandler):
@@ -126,7 +135,18 @@ def main() -> int:
             if self.path != "/execute":
                 self.send_error(404)
                 return
-            length = int(self.headers.get("Content-Length", 0))
+            expected = f"Bearer {args.auth_token}"
+            if not hmac.compare_digest(self.headers.get("Authorization", ""), expected):
+                self.send_error(401, "authorization required")
+                return
+            try:
+                length = int(self.headers.get("Content-Length", 0))
+            except ValueError:
+                self.send_error(400, "invalid Content-Length")
+                return
+            if length <= 0 or length > MAX_REQUEST_BYTES:
+                self.send_error(413, "request is too large")
+                return
             try:
                 response = adapter.execute(json.loads(self.rfile.read(length)))
                 body = json.dumps(response).encode()
@@ -135,8 +155,9 @@ def main() -> int:
                 self.send_header("Content-Length", str(len(body)))
                 self.end_headers()
                 self.wfile.write(body)
-            except Exception as exc:
-                self.send_error(500, str(exc))
+            except Exception:
+                print("AppWorld request failed", flush=True)
+                self.send_error(500, "internal server error")
 
         def log_message(self, format, *args):
             print(format % args, flush=True)

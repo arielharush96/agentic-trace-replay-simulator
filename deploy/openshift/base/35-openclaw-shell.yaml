@@ -1,7 +1,7 @@
 apiVersion: v1
 kind: Secret
 metadata:
-  name: openclaw-secrets
+  name: openclaw-shell-secrets
   namespace: trace-replay
 stringData:
   OPENCLAW_GATEWAY_TOKEN: replace-me
@@ -9,7 +9,7 @@ stringData:
 apiVersion: v1
 kind: ConfigMap
 metadata:
-  name: openclaw-agent
+  name: openclaw-shell-agent
   namespace: trace-replay
 data:
   AGENTS.md: |
@@ -166,11 +166,13 @@ spec:
           env:
             - name: OPENSHELL_CLI_VERSION
               value: replace-me
+            - name: OPENSHELL_CLI_SHA256
+              value: replace-me
           command: ["python3", "-c"]
           args:
             - |
-              import io, os, sys, tarfile, urllib.request, subprocess
-              subprocess.check_call([sys.executable, "-m", "pip", "install", "--quiet", "--target=/tmp/py", "zstandard"])
+              import hashlib, hmac, io, os, sys, tarfile, urllib.request, subprocess
+              subprocess.check_call([sys.executable, "-m", "pip", "install", "--quiet", "--target=/tmp/py", "zstandard==0.23.0"])
               sys.path.insert(0, "/tmp/py")
               import zstandard
               ver = os.environ["OPENSHELL_CLI_VERSION"]
@@ -181,6 +183,15 @@ spec:
               os.makedirs(dest_dir, exist_ok=True)
               print("fetch", url, flush=True)
               urllib.request.urlretrieve(url, "/tmp/openshell.deb")
+              expected = os.environ.get("OPENSHELL_CLI_SHA256", "").lower()
+              if len(expected) != 64 or expected == "replace-me":
+                  raise SystemExit("OPENSHELL_CLI_SHA256 must be set to the release SHA-256")
+              digest = hashlib.sha256()
+              with open("/tmp/openshell.deb", "rb") as f:
+                  for chunk in iter(lambda: f.read(1024 * 1024), b""):
+                      digest.update(chunk)
+              if not hmac.compare_digest(digest.hexdigest(), expected):
+                  raise SystemExit("OpenShell CLI checksum verification failed")
               with open("/tmp/openshell.deb", "rb") as f:
                   magic = f.read(8)
                   if magic != b"!<arch>\n":
@@ -290,7 +301,7 @@ spec:
             - name: OPENCLAW_GATEWAY_TOKEN
               valueFrom:
                 secretKeyRef:
-                  name: openclaw-secrets
+                  name: openclaw-shell-secrets
                   key: OPENCLAW_GATEWAY_TOKEN
             - name: MOCK_LLM_URL
               value: "http://mock-llm.trace-replay.svc.cluster.local:8080"
@@ -328,7 +339,7 @@ spec:
             name: openclaw-shell-config
         - name: agent-config
           configMap:
-            name: openclaw-agent
+            name: openclaw-shell-agent
 ---
 apiVersion: v1
 kind: Service
