@@ -310,7 +310,7 @@ def test_per_turn_edges_timing_and_correlation(tmp_path: Path, monkeypatch):
         with urllib.request.urlopen(req, timeout=10) as resp:
             resp.read()
 
-    recs = [json.loads(l) for l in edges.read_text().splitlines() if l.strip()]
+    recs = [json.loads(line) for line in edges.read_text().splitlines() if line.strip()]
     assert len(recs) == 3
     recs.sort(key=lambda r: r["turn_seq"])
 

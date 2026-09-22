@@ -95,7 +95,6 @@ def plot_summary_bars(summary: dict, out: Path) -> None:
     out.mkdir(parents=True, exist_ok=True)
     components = list(summary)
     labels = ["Mean", "P50", "P95"]
-    colors = ["#2563EB", "#0F766E", "#C2410C"]
     fig, axes = plt.subplots(1, 2, figsize=(13, 5))
     for axis, metric, title, ylabel in (
         (axes[0], "cpu_cores", "CPU Usage", "CPU cores"),

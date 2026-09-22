@@ -13,7 +13,6 @@ import argparse
 import json
 import logging
 import os
-import shutil
 import signal
 import socket
 import subprocess
@@ -33,12 +32,13 @@ sys.path.insert(0, str(SRC))
 # initialize the macOS GUI backend from a worker thread.
 os.environ.setdefault("MPLBACKEND", "Agg")
 
-from trace_replay_sim.collect import collect as collect_prometheus
-from trace_replay_sim.jaeger_export import compute_timing_segments, extract_per_turn, export as export_jaeger
-from trace_replay_sim.per_turn_analysis import analyze as analyze_per_turn
-from trace_replay_sim.profiler_v2 import profile as profile_v2
-from trace_replay_sim.workloads import WORKLOADS, split_corpus
-from generate_appworld_plots import plot_events as plot_appworld_events
+from trace_replay_sim.collect import collect as collect_prometheus  # noqa: E402
+from trace_replay_sim.jaeger_export import compute_timing_segments, extract_per_turn, export as export_jaeger  # noqa: E402
+from trace_replay_sim.per_turn_analysis import analyze as analyze_per_turn  # noqa: E402
+from trace_replay_sim.profiler_v2 import profile as profile_v2  # noqa: E402
+from trace_replay_sim.audit_corpus import classify_session  # noqa: E402
+from trace_replay_sim.workloads import WORKLOADS, split_corpus  # noqa: E402
+from generate_appworld_plots import plot_events as plot_appworld_events  # noqa: E402
 
 LOG = logging.getLogger("run-experiment")
 
@@ -133,7 +133,7 @@ def _stop_cgroup_samplers(samplers: list[tuple[subprocess.Popen[str], Any]]) -> 
         handle.close()
 
 
-def preflight(cluster: Cluster, agents: int, system_ns: str, openshell_ns: str) -> None:
+def preflight(cluster: Cluster, agents: int, system_ns: str, openshell_ns: str, appworld: bool) -> None:
     log_phase("preflight: validating cluster, target node and system services")
     context = cluster.run(["config", "current-context"])
     user = cluster.run(["whoami"])
@@ -142,7 +142,10 @@ def preflight(cluster: Cluster, agents: int, system_ns: str, openshell_ns: str) 
     if not ready or node.get("spec", {}).get("unschedulable"):
         raise RuntimeError(f"target node is not ready/schedulable: {cluster.node}")
     LOG.info("context=%s user=%s node=%s", context.strip(), user.strip(), cluster.node)
-    for deployment in ("mock-llm", "appworld", "jaeger"):
+    deployments = ["mock-llm", "jaeger"]
+    if appworld:
+        deployments.append("appworld")
+    for deployment in deployments:
         cluster.wait_rollout_in(system_ns, deployment)
     cluster.run(["-n", openshell_ns, "get", "statefulset/openshell"])
     services = cluster.run(["-n", cluster.namespace, "get", "svc", "openclaw-shell"], check=False)
@@ -169,9 +172,9 @@ def _clone_config(cluster: Cluster, source: str, target: str, workspace: str) ->
     cluster.apply_json(config)
 
 
-def _ensure_openshell_workspace(cluster: Cluster, deployment: str, workspace: str) -> None:
+def _ensure_openshell_workspace(cluster: Cluster, deployment: str, workspace: str, openshell_ns: str) -> None:
     cli = "/opt/openshell/bin/openshell"
-    endpoint = "http://openshell.openshell-tracesim.svc.cluster.local:8080"
+    endpoint = f"http://openshell.{openshell_ns}.svc.cluster.local:8080"
     common = ["-n", cluster.namespace, "exec", f"deployment/{deployment}", "-c", "gateway", "--", cli]
     existing = cluster.run([*common, "workspace", "get", workspace, "--gateway-endpoint", endpoint], check=False)
     if existing.strip():
@@ -192,7 +195,7 @@ def _configured_workspace(cluster: Cluster, agent: str) -> str:
         return ""
 
 
-def deploy_agents(cluster: Cluster, agents: int, *, reuse: bool, workspace_prefix: str) -> list[str]:
+def deploy_agents(cluster: Cluster, agents: int, *, reuse: bool, workspace_prefix: str, openshell_ns: str) -> list[str]:
     log_phase(f"deployment: preparing {agents} OpenClaw agents with isolated OpenShell workspaces")
     names: list[str] = []
     for index in range(1, agents + 1):
@@ -214,7 +217,7 @@ def deploy_agents(cluster: Cluster, agents: int, *, reuse: bool, workspace_prefi
                 "spec": {"clusterIP": "None", "selector": {"app": name}, "ports": [{"name": "gateway", "port": 18790, "targetPort": 18790}]},
             }
             cluster.apply_json(service_obj)
-            _ensure_openshell_workspace(cluster, name, workspace)
+            _ensure_openshell_workspace(cluster, name, workspace, openshell_ns)
             continue
         _clone_config(cluster, "openclaw-shell-config", config, workspace)
         deployment = cluster.json(["-n", cluster.namespace, "get", "deployment", name if existing else "openclaw-shell"])
@@ -230,7 +233,8 @@ def deploy_agents(cluster: Cluster, agents: int, *, reuse: bool, workspace_prefi
         template["spec"]["nodeSelector"] = {"kubernetes.io/hostname": cluster.node}
         for volume in template["spec"].get("volumes", []):
             if volume.get("name") == "openclaw-shell-home":
-                volume.clear(); volume.update({"name": "openclaw-shell-home", "emptyDir": {}})
+                volume.clear()
+                volume.update({"name": "openclaw-shell-home", "emptyDir": {}})
             if volume.get("name") == "config-template":
                 volume["configMap"] = {"name": config}
         for container in template["spec"].get("containers", []):
@@ -247,7 +251,7 @@ def deploy_agents(cluster: Cluster, agents: int, *, reuse: bool, workspace_prefi
         }
         cluster.apply_json(service_obj)
         cluster.wait_rollout(name)
-        _ensure_openshell_workspace(cluster, name, workspace)
+        _ensure_openshell_workspace(cluster, name, workspace, openshell_ns)
     return names
 
 
@@ -316,6 +320,12 @@ def build_queue(
         for index, session in enumerate(payload["sessions"]):
             if session_id and str(session.get("session_id")) != session_id:
                 continue
+            # Keep the execution queue limited to deterministic, single-agent
+            # sessions. Nested/subagent traces and sessions without complete
+            # recorded tool results cannot be reproduced faithfully by this
+            # harness and must not silently enter a controlled run.
+            if classify_session(session)["status"] != "controlled_replay_candidate":
+                continue
             queue.append({"workload": workload, "index": index, "session": session})
     return queue[:max_traces] if max_traces is not None else queue
 
@@ -331,7 +341,6 @@ def create_trace_job(cluster: Cluster, item: dict[str, Any], agent: str, out: Pa
     job = f"aharush-{run_id}-trace-{workload[:20]}-{index:03d}" + (f"-r{attempt}" if attempt else "")
     if not cluster.run(["-n", cluster.namespace, "get", "configmap", cm], check=False).strip():
         cluster.run(["-n", cluster.namespace, "create", "configmap", cm, f"--from-file=replay.json={corpus_path}"])
-    appworld = cluster.run(["-n", system_ns, "get", "pod", "-l", "app=appworld", "-o", "jsonpath={.items[0].metadata.name}"]).strip()
     driver_env: list[dict[str, Any]] = []
     token_secret = os.environ.get("OPENCLAW_TOKEN_SECRET")
     if token_secret:
@@ -415,9 +424,11 @@ def collect_trace(
     session_id: str,
     start: float,
     system_ns: str,
+    openshell_ns: str,
     jaeger: str,
     agent: str,
     workspace: str,
+    appworld: bool,
 ) -> None:
     openclaw_pod = cluster.run(["-n", cluster.namespace, "get", "pod", "-l", f"app={agent}", "-o", "jsonpath={.items[0].metadata.name}"]).strip()
     cgroup_dir = trace_dir / "data/shell/prometheus/cgroup"
@@ -430,7 +441,7 @@ def collect_trace(
     def watch_sandbox() -> None:
         while not watcher_stop.wait(0.25):
             try:
-                pods = cluster.json(["-n", "openshell-tracesim", "get", "pods"])
+                pods = cluster.json(["-n", openshell_ns, "get", "pods"])
                 for pod in pods.get("items", []):
                     name = str(pod.get("metadata", {}).get("name") or "")
                     spec = pod.get("spec", {})
@@ -446,7 +457,7 @@ def collect_trace(
                     containers = [str(item.get("name")) for item in spec.get("containers", [])]
                     container = "agent" if "agent" in containers else (containers[0] if containers else "")
                     if container:
-                        samplers.append(_start_cgroup_sampler(cluster, "openshell-tracesim", name, container, cgroup_dir / "openshell_sandbox.csv"))
+                        samplers.append(_start_cgroup_sampler(cluster, openshell_ns, name, container, cgroup_dir / "openshell_sandbox.csv"))
                         return
             except Exception as exc:  # noqa: BLE001
                 watcher_errors.append(str(exc))
@@ -524,19 +535,22 @@ def collect_trace(
     matched = _rewrite_filtered_jaeger(trace_dir, session_id, driver_start_us, driver_end_us)
     if matched == 0:
         raise RuntimeError(f"No Jaeger traces matched session/time window for {session_id}")
-    collect_prometheus(shell / "prometheus", start=start, end=end, ns_openclaw=cluster.namespace, ns_openshell="openshell-tracesim", openclaw_pod=openclaw_pod)
+    collect_prometheus(shell / "prometheus", start=start, end=end, ns_openclaw=cluster.namespace, ns_openshell=openshell_ns, openclaw_pod=openclaw_pod)
     profile_v2(traces=traces / "raw_traces.json", mock_edges=shell / "mock_edges.jsonl", prom=shell / "prometheus", out=shell / "profile-v2", driver_requests=shell / "terminal.log")
     analyze_per_turn(traces, shell / "prometheus", trace_dir / "analysis")
-    appworld = cluster.run(["-n", system_ns, "get", "pod", "-l", "app=appworld", "-o", "jsonpath={.items[0].metadata.name}"]).strip()
-    app_dir = trace_dir / "data/appworld"; app_dir.mkdir(parents=True, exist_ok=True)
-    events = cluster.run(["-n", system_ns, "exec", appworld, "--", "cat", "/tmp/appworld-service-raw.log"], check=False)
-    session_events = [line for line in events.splitlines() if session_id in line]
-    (app_dir / "events.jsonl").write_text("\n".join(session_events) + ("\n" if session_events else ""))
-    plot_appworld_events(
-        app_dir / "events.jsonl",
-        app_dir / "appworld_api_latency.png",
-        f"Shell AppWorld API latency: {session_id}",
-    )
+    session_events: list[str] = []
+    if appworld:
+        appworld_pod = cluster.run(["-n", system_ns, "get", "pod", "-l", "app=appworld", "-o", "jsonpath={.items[0].metadata.name}"]).strip()
+        app_dir = trace_dir / "data/appworld"
+        app_dir.mkdir(parents=True, exist_ok=True)
+        events = cluster.run(["-n", system_ns, "exec", appworld_pod, "--", "cat", "/tmp/appworld-service-raw.log"], check=False)
+        session_events = [line for line in events.splitlines() if session_id in line]
+        (app_dir / "events.jsonl").write_text("\n".join(session_events) + ("\n" if session_events else ""))
+        plot_appworld_events(
+            app_dir / "events.jsonl",
+            app_dir / "appworld_api_latency.png",
+            f"Shell AppWorld API latency: {session_id}",
+        )
     per_turn = json.loads((shell / "profile-v2/per_turn.json").read_text(encoding="utf-8"))
     per_tool = json.loads((shell / "profile-v2/per_tool.json").read_text(encoding="utf-8"))
     waterfall = shell / "profile-v2/diagrams/latency_waterfall.png"
@@ -546,9 +560,18 @@ def collect_trace(
         raise RuntimeError(
             f"invalid profiler output for {session_id}: turns={len(per_turn)} tools={len(per_tool)} tool_errors={tool_errors} cgroup_rows={cgroup_rows} waterfall_bytes={waterfall.stat().st_size if waterfall.exists() else 0}"
         )
-    if not session_events:
+    if appworld and not session_events:
         raise RuntimeError(f"no real AppWorld events captured for {session_id}")
-    metadata = {"job": job, "agent": agent, "session_id": session_id, "start": start, "end": end, "target_node": cluster.node}
+    metadata = {
+        "job": job,
+        "agent": agent,
+        "session_id": session_id,
+        "start": start,
+        "end": end,
+        "target_node": cluster.node,
+        "appworld": appworld,
+        "openshell_namespace": openshell_ns,
+    }
     (trace_dir / "trace.json").write_text(json.dumps(metadata, indent=2))
 
 
@@ -564,6 +587,7 @@ def main() -> int:
     parser.add_argument("--namespace", default="trace-replay")
     parser.add_argument("--system-namespace", default="trace-replay")
     parser.add_argument("--openshell-namespace", default="openshell-tracesim")
+    parser.add_argument("--appworld", action="store_true", help="require the optional AppWorld service and collect real AppWorld events")
     parser.add_argument("--node", default=os.environ.get("TARGET_NODE"))
     parser.add_argument("--kubeconfig", default=os.environ.get("KUBECONFIG"))
     parser.add_argument("--jaeger", default="http://127.0.0.1:16686")
@@ -592,14 +616,14 @@ def main() -> int:
         for workload in WORKLOADS:
             LOG.info("  %s: %d", workload, sum(item["workload"] == workload for item in queue))
         return 0
-    preflight(cluster, args.agents, args.system_namespace, args.openshell_namespace)
+    preflight(cluster, args.agents, args.system_namespace, args.openshell_namespace, args.appworld)
     ensure_driver_config(cluster)
     # OpenClaw validates workspace names to a maximum of 19 characters.
     # Keep the per-run timestamp component while leaving room for `-<index>`.
     run_token = safe_name(args.out.name).split("-", 1)[1][:6] if "-" in args.out.name else safe_name(args.out.name)[:6]
     workspace_prefix = f"aharush-{run_token}"
     log_phase(f"deployment: workspace prefix={workspace_prefix}")
-    agents = deploy_agents(cluster, args.agents, reuse=args.reuse_agents, workspace_prefix=workspace_prefix)
+    agents = deploy_agents(cluster, args.agents, reuse=args.reuse_agents, workspace_prefix=workspace_prefix, openshell_ns=args.openshell_namespace)
     workspace_by_agent = {
         agent: _configured_workspace(cluster, agent) or f"{workspace_prefix}-{index}"
         for index, agent in enumerate(agents, start=1)
@@ -631,7 +655,7 @@ def main() -> int:
                     run_id = f"{safe_name(args.out.name)[:6] or 'run'}-{int(start) % 1000000:06d}"
                     job, trace_dir, session_id = create_trace_job(cluster, item, agent, args.out / "traces", args.system_namespace, run_id, attempt)
                     workspace = workspace_by_agent[agent]
-                    collect_trace(cluster, job, trace_dir, session_id, start, args.system_namespace, jaeger_url, agent, workspace)
+                    collect_trace(cluster, job, trace_dir, session_id, start, args.system_namespace, args.openshell_namespace, jaeger_url, agent, workspace, args.appworld)
                     log_phase(f"trace complete: {trace_dir}")
                     return {"position": position, "session_id": session_id, "agent": agent, "ok": True, "attempt": attempt + 1}
                 except Exception as exc:
@@ -654,7 +678,14 @@ def main() -> int:
     finally:
         pf.send_signal(signal.SIGTERM)
         pf.wait(timeout=10)
-    (args.out / "experiment.json").write_text(json.dumps({"agents": args.agents, "traces": len(queue), "workloads": WORKLOADS, "node": args.node}, indent=2))
+    (args.out / "experiment.json").write_text(json.dumps({
+        "agents": args.agents,
+        "traces": len(queue),
+        "workloads": WORKLOADS,
+        "node": args.node,
+        "appworld": args.appworld,
+        "openshell_namespace": args.openshell_namespace,
+    }, indent=2))
     subprocess.run([sys.executable, str(ROOT / "scripts/analyze_multi_agent_results.py"), "--experiment", str(args.out)], check=True)
     log_phase(f"complete: results in {args.out}")
     return 0

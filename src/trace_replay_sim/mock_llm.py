@@ -490,10 +490,10 @@ class ReplayIndex:
         blob = json.dumps(payload, ensure_ascii=False)
         turn_matches = list(TURN_TAG_RE.finditer(blob))
         turn_match = turn_matches[-1] if turn_matches else None
+        counter_key = trace_id or session_id
         if turn_match:
             turn_seq = int(turn_match.group(1) or turn_match.group(2))
         else:
-            counter_key = trace_id or session_id
             with self.lock:
                 turn_seq = self._turn.get(counter_key, 0)
                 self._turn[counter_key] = turn_seq + 1

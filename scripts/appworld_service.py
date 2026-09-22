@@ -70,16 +70,18 @@ class AppWorldAdapter:
         prefix = "mcp__environment__"
         if not name.startswith(prefix):
             return {"ok": False, "error": f"unsupported tool name: {name}"}
-        parts = name[len(prefix):].split("__", 1)
-        if len(parts) != 2:
-            return {"ok": False, "error": f"cannot map AppWorld tool: {name}"}
-        app_name, api_name = parts
         if name == "mcp__environment__finish":
-            expression = "response = apis.supervisor.complete_task(**arguments)"
-        elif app_name == "supervisor" and api_name == "complete_task":
+            app_name, api_name = "supervisor", "complete_task"
             expression = "response = apis.supervisor.complete_task(**arguments)"
         else:
-            expression = f"response = apis.{app_name}.{api_name}(**arguments)"
+            parts = name[len(prefix):].split("__", 1)
+            if len(parts) != 2:
+                return {"ok": False, "error": f"cannot map AppWorld tool: {name}"}
+            app_name, api_name = parts
+            if app_name == "supervisor" and api_name == "complete_task":
+                expression = "response = apis.supervisor.complete_task(**arguments)"
+            else:
+                expression = f"response = apis.{app_name}.{api_name}(**arguments)"
         # AppWorld freezes Python clocks; use the kernel raw monotonic clock.
         started_ns = self._clock_ns()
         with self.lock:

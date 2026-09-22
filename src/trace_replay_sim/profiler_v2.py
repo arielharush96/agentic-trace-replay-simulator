@@ -184,7 +184,10 @@ def _trace_rows(trace: dict[str, Any], edges: dict[tuple[str, int], dict[str, An
         first_tool = following_tools[0] if following_tools else None
         following_execs = [item for item in execs if end is not None and (_start_ms(item) or 0) >= end
                            and (next_start is None or (_start_ms(item) or 0) < next_start)]
-        tool_dispatch_ms = _span_ms(first_tool)
+        # Sum every tool wrapper in this turn. Using only the first wrapper
+        # undercounted dispatch/wait time when OpenClaw issued multiple tools
+        # before the next model call.
+        tool_dispatch_ms = sum(_span_ms(item) or 0.0 for item in following_tools) if following_tools else None
         exec_ms = sum(_span_ms(item) or 0 for item in following_execs) if following_execs else None
         previous_hops = [span for span in tools + execs if _end_ms(span) is not None and start is not None and _end_ms(span) <= start]
         previous_end = max((_end_ms(span) or 0.0) for span in previous_hops) if previous_hops else _start_ms(harness)
@@ -355,6 +358,17 @@ def _counter_rate(series: list[tuple[float, float]]) -> list[tuple[float, float]
 def _prom_counter_rate(path: Path) -> list[tuple[float, float]]:
     if not path.exists():
         return []
+    try:
+        payload = _load_json(path)
+        result = (payload.get("data") or {}).get("result") or []
+        by_timestamp: dict[float, float] = {}
+        for series in result:
+            points = sorted((float(ts), float(value)) for ts, value in series.get("values", []))
+            for timestamp, rate in _counter_rate(points):
+                by_timestamp[timestamp] = by_timestamp.get(timestamp, 0.0) + rate
+        return sorted(by_timestamp.items())
+    except (OSError, TypeError, ValueError, json.JSONDecodeError):
+        return []
 
 
 def _cgroup_series(path: Path) -> tuple[list[tuple[float, float]], list[tuple[float, float]]]:
@@ -375,17 +389,6 @@ def _cgroup_series(path: Path) -> tuple[list[tuple[float, float]], list[tuple[fl
             cpu.append((current[0], delta_cpu / (delta_s * 1_000_000)))
     memory = [(timestamp, value) for timestamp, _, value in samples]
     return cpu, memory
-    try:
-        payload = _load_json(path)
-        result = (payload.get("data") or {}).get("result") or []
-        by_timestamp: dict[float, float] = {}
-        for series in result:
-            points = sorted((float(ts), float(value)) for ts, value in series.get("values", []))
-            for timestamp, rate in _counter_rate(points):
-                by_timestamp[timestamp] = by_timestamp.get(timestamp, 0.0) + rate
-        return sorted(by_timestamp.items())
-    except (OSError, TypeError, ValueError, json.JSONDecodeError):
-        return []
 
 
 def _plots(rows: list[dict[str, Any]], prom_dir: Path | None, out: Path) -> list[str]:

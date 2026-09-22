@@ -12,6 +12,7 @@ MODE_COUNT=0
 KUBECONFIG_PATH="${KUBECONFIG:-$HOME/.kube/config}"
 NODE="${TARGET_NODE:-}"
 REUSE_AGENTS=0
+APPWORLD=0
 
 die() { echo "ERROR: $*" >&2; exit 2; }
 
@@ -24,8 +25,9 @@ while (($#)); do
     --plan) MODE="plan"; MODE_COUNT=$((MODE_COUNT + 1)); shift ;;
     --execute) MODE="execute"; MODE_COUNT=$((MODE_COUNT + 1)); shift ;;
     --reuse-agents) REUSE_AGENTS=1; shift ;;
+    --appworld) APPWORLD=1; shift ;;
     -h|--help)
-      echo "Usage: $0 --corpus FILE [--out DIR] [--plan|--execute] [--reuse-agents]"
+      echo "Usage: $0 --corpus FILE [--out DIR] [--plan|--execute] [--reuse-agents] [--appworld]"
       exit 0
       ;;
     *) die "unknown argument: $1" ;;
@@ -56,6 +58,9 @@ ARGS=(
 )
 if ((REUSE_AGENTS)); then
   ARGS+=(--reuse-agents)
+fi
+if ((APPWORLD)); then
+  ARGS+=(--appworld)
 fi
 
 echo "Two-agent smoke gate: mode=$MODE traces=2 agents=2 output=$OUT"

@@ -242,7 +242,6 @@ def derive_per_turn(
             mc = tinfo["by_id"].get(parent) if tinfo else None
             if tinfo and mc is not None:
                 ops = tinfo["ops"]
-                model_calls = ops.get("openclaw.model.call", [])
                 context_spans = ops.get("openclaw.context.assembled", [])
                 tools = ops.get("openclaw.tool.execution", [])
                 execs = ops.get("openclaw.exec", [])
