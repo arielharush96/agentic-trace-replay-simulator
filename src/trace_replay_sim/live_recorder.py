@@ -13,7 +13,9 @@ wall-clock timestamps so it can be correlated with OTEL and cgroup samples.
 from __future__ import annotations
 
 import argparse
+import hmac
 import json
+import os
 import re
 import threading
 import time
@@ -24,6 +26,8 @@ from pathlib import Path
 from typing import Any, Iterable
 
 SCHEMA = "agent-event/v1"
+MAX_EVENT_BYTES = 1_048_576
+DEFAULT_RATE_LIMIT = 100
 SENSITIVE_KEY = re.compile(
     r"(?:authorization|api[_-]?key|access[_-]?token|refresh[_-]?token|password|passwd|secret|credential|cookie|set-cookie)",
     re.IGNORECASE,
@@ -113,6 +117,11 @@ def load_events(path: str | Path) -> list[dict[str, Any]]:
 
 class _CollectorHandler(BaseHTTPRequestHandler):
     recorder: EventRecorder
+    auth_token: str
+    rate_limit: int
+    _rate_lock = threading.Lock()
+    _window_start = 0.0
+    _window_count = 0
 
     def log_message(self, *_args: object) -> None:
         return
@@ -132,8 +141,26 @@ class _CollectorHandler(BaseHTTPRequestHandler):
         if self.path != "/v1/events":
             self.send_error(HTTPStatus.NOT_FOUND)
             return
+        if not hmac.compare_digest(
+            self.headers.get("Authorization", ""), f"Bearer {self.auth_token}"
+        ):
+            self.send_error(HTTPStatus.UNAUTHORIZED, "authorization required")
+            return
         try:
             length = int(self.headers.get("Content-Length", "0"))
+            if length <= 0 or length > MAX_EVENT_BYTES:
+                self.send_error(HTTPStatus.REQUEST_ENTITY_TOO_LARGE, "event is too large")
+                return
+            now = time.monotonic()
+            handler_type = type(self)
+            with handler_type._rate_lock:
+                if now - handler_type._window_start >= 1.0:
+                    handler_type._window_start = now
+                    handler_type._window_count = 0
+                handler_type._window_count += 1
+                if handler_type._window_count > handler_type.rate_limit:
+                    self.send_error(HTTPStatus.TOO_MANY_REQUESTS, "rate limit exceeded")
+                    return
             body = json.loads(self.rfile.read(length))
             if not isinstance(body, dict):
                 raise ValueError("event body must be a JSON object")
@@ -156,9 +183,24 @@ class _CollectorHandler(BaseHTTPRequestHandler):
             self.send_error(HTTPStatus.BAD_REQUEST, str(exc))
 
 
-def serve(path: str | Path, *, host: str = "127.0.0.1", port: int = 8787) -> None:
+def serve(
+    path: str | Path,
+    *,
+    host: str = "127.0.0.1",
+    port: int = 8787,
+    auth_token: str,
+    rate_limit: int = DEFAULT_RATE_LIMIT,
+) -> None:
+    if not auth_token:
+        raise ValueError("auth_token is required")
+    if rate_limit < 1:
+        raise ValueError("rate_limit must be positive")
     recorder = EventRecorder(path)
-    handler = type("CollectorHandler", (_CollectorHandler,), {"recorder": recorder})
+    handler = type(
+        "CollectorHandler",
+        (_CollectorHandler,),
+        {"recorder": recorder, "auth_token": auth_token, "rate_limit": rate_limit},
+    )
     server = ThreadingHTTPServer((host, port), handler)
     try:
         print(f"Live recorder listening on http://{host}:{port}/v1/events", flush=True)
@@ -173,8 +215,10 @@ def main(argv: Iterable[str] | None = None) -> int:
     parser.add_argument("--out", required=True, help="append-only JSONL output path")
     parser.add_argument("--host", default="127.0.0.1")
     parser.add_argument("--port", type=int, default=8787)
+    parser.add_argument("--auth-token", default=os.environ.get("TRACE_RECORDER_AUTH_TOKEN", ""))
+    parser.add_argument("--rate-limit", type=int, default=DEFAULT_RATE_LIMIT)
     args = parser.parse_args(list(argv) if argv is not None else None)
-    serve(args.out, host=args.host, port=args.port)
+    serve(args.out, host=args.host, port=args.port, auth_token=args.auth_token, rate_limit=args.rate_limit)
     return 0
 
 

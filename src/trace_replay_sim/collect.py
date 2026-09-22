@@ -27,6 +27,15 @@ from typing import Any
 DEFAULT_THANOS = ""
 
 
+def _ssl_context(*, insecure_skip_verify: bool = False) -> ssl.SSLContext:
+    """Build a TLS context; insecure verification is an explicit opt-in."""
+    ctx = ssl.create_default_context()
+    if insecure_skip_verify:
+        ctx.check_hostname = False
+        ctx.verify_mode = ssl.CERT_NONE
+    return ctx
+
+
 def oc_token() -> str:
     """Get auth token for Thanos queries."""
     token = os.environ.get("PROM_TOKEN")
@@ -84,15 +93,22 @@ def openclaw_app_queries() -> dict[str, str]:
     }
 
 
-def query_range(token: str, host: str, query: str, start: float, end: float, step: str = "15s") -> dict[str, Any] | None:
+def query_range(
+    token: str,
+    host: str,
+    query: str,
+    start: float,
+    end: float,
+    step: str = "15s",
+    *,
+    insecure_skip_verify: bool = False,
+) -> dict[str, Any] | None:
     params = urllib.parse.urlencode(
         {"query": query, "start": str(int(start)), "end": str(int(end)), "step": step}
     )
     url = f"https://{host}/api/v1/query_range?{params}"
     req = urllib.request.Request(url, headers={"Authorization": f"Bearer {token}"})
-    ctx = ssl.create_default_context()
-    ctx.check_hostname = False
-    ctx.verify_mode = ssl.CERT_NONE
+    ctx = _ssl_context(insecure_skip_verify=insecure_skip_verify)
     try:
         with urllib.request.urlopen(req, context=ctx, timeout=30) as resp:
             return json.loads(resp.read())
@@ -108,13 +124,16 @@ def _has_data(result: dict | None) -> bool:
     return any(len(s.get("values") or []) > 0 for s in series)
 
 
-def direct_scrape_openclaw(openclaw_url: str, api_key: str) -> str | None:
+def direct_scrape_openclaw(
+    openclaw_url: str,
+    api_key: str,
+    *,
+    insecure_skip_verify: bool = False,
+) -> str | None:
     """Directly scrape OpenClaw's /api/diagnostics/prometheus endpoint."""
     url = f"{openclaw_url}/api/diagnostics/prometheus"
     req = urllib.request.Request(url, headers={"Authorization": f"Bearer {api_key}"})
-    ctx = ssl.create_default_context()
-    ctx.check_hostname = False
-    ctx.verify_mode = ssl.CERT_NONE
+    ctx = _ssl_context(insecure_skip_verify=insecure_skip_verify)
     try:
         with urllib.request.urlopen(req, context=ctx, timeout=10) as resp:
             return resp.read().decode("utf-8")
@@ -139,9 +158,16 @@ def parse_prometheus_text(text: str) -> dict[str, list[dict]]:
     return metrics
 
 
-def discover_metrics(openclaw_url: str, api_key: str) -> list[str]:
+def discover_metrics(
+    openclaw_url: str,
+    api_key: str,
+    *,
+    insecure_skip_verify: bool = False,
+) -> list[str]:
     """Discover which metric names OpenClaw actually exports."""
-    text = direct_scrape_openclaw(openclaw_url, api_key)
+    text = direct_scrape_openclaw(
+        openclaw_url, api_key, insecure_skip_verify=insecure_skip_verify
+    )
     if not text:
         return []
     metrics = parse_prometheus_text(text)
@@ -159,7 +185,11 @@ def collect(
     openclaw_pod: str | None = None,
     openclaw_url: str | None = None,
     openclaw_api_key: str | None = None,
+    insecure_skip_verify: bool = False,
 ) -> dict[str, Any]:
+    insecure_skip_verify = insecure_skip_verify or os.environ.get("THANOS_INSECURE_SKIP_VERIFY") == "1"
+    if insecure_skip_verify:
+        print("WARNING: TLS certificate verification is disabled by explicit opt-in", file=sys.stderr)
     host = thanos_host or os.environ.get("THANOS_HOST", DEFAULT_THANOS)
     token = oc_token() if host else ""
     if host and not token:
@@ -179,7 +209,10 @@ def collect(
     # workload boundaries.
     for name, query in cadvisor_queries(ns_openclaw, ns_openshell, openclaw_pod).items():
         result = (
-            query_range(token, host, query, max(0, start - 300), end + 60, step="1s")
+            query_range(
+                token, host, query, max(0, start - 300), end + 60,
+                step="1s", insecure_skip_verify=insecure_skip_verify,
+            )
             if token and host
             else None
         )
@@ -196,7 +229,10 @@ def collect(
     oc_dir.mkdir(exist_ok=True)
     app_success = 0
     for name, query in openclaw_app_queries().items():
-        result = query_range(token, host, query, start, end, step="1s") if token and host else None
+        result = (
+            query_range(token, host, query, start, end, step="1s", insecure_skip_verify=insecure_skip_verify)
+            if token and host else None
+        )
         if _has_data(result):
             app_success += 1
         path = oc_dir / f"{name}.json"
@@ -209,7 +245,12 @@ def collect(
     if app_success == 0 and openclaw_url:
         print("  Thanos app metrics empty — trying direct scrape fallback...")
         api_key = openclaw_api_key or os.environ.get("OPENCLAW_TOKEN", "")
-        text = direct_scrape_openclaw(openclaw_url, api_key) if api_key else None
+        text = (
+            direct_scrape_openclaw(
+                openclaw_url, api_key, insecure_skip_verify=insecure_skip_verify
+            )
+            if api_key else None
+        )
         if not api_key:
             report["warnings"].append(
                 "OPENCLAW_TOKEN is not configured; direct scrape fallback skipped"

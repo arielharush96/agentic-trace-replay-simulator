@@ -47,8 +47,10 @@ def classify_session(session: dict[str, Any]) -> dict[str, str]:
 def _with_workload(session: dict[str, Any]) -> dict[str, Any]:
     enriched = dict(session)
     classification = classify_session(enriched)
-    enriched.setdefault("workload", classification["workload"])
-    enriched.setdefault("workload_profile", classification["profile"])
+    # The benchmark taxonomy is authoritative.  Do not preserve stale labels
+    # copied from an earlier corpus partition.
+    enriched["workload"] = classification["workload"]
+    enriched["workload_profile"] = classification["profile"]
     return enriched
 
 

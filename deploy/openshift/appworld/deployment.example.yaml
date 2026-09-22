@@ -22,6 +22,11 @@ spec:
               value: /appworld
             - name: APPWORLD_TASK_MAP
               value: /config/session-task-map.json
+            - name: APPWORLD_AUTH_TOKEN
+              valueFrom:
+                secretKeyRef:
+                  name: appworld-api-auth
+                  key: token
           ports:
             - name: http
               containerPort: 8090

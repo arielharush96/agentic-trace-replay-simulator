@@ -18,7 +18,10 @@ available before running the benchmark.
 
 The runner does not modify cluster monitoring by default. A cluster
 administrator may explicitly opt in with `APPLY_MONITORING=1`; review
-`deploy/openshift/base/50-monitoring.yaml` before doing so.
+`deploy/openshift/base/50-monitoring.yaml` before doing so. The SCC under
+`deploy/openshift/prerequisites/` is cluster-scoped and is intentionally not
+included in the namespace-local base; apply it only through the cluster's
+approved administrative process.
 
 ## Safety
 

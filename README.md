@@ -5,8 +5,8 @@
 
 Deterministic performance benchmarking for multi-step agentic workloads on
 OpenShift. The current integration measures **OpenClaw as the agentic harness** and **OpenShell** with
-a controlled replay backend instead of live LLM inference.
-future work will allow to test any agentic harness, or testing with real inference.
+a controlled replay backend instead of live LLM inference. Future work can
+extend the adapters to other agentic harnesses or real inference.
 
 The benchmark replays recorded agent sessions from the public
 [`Exgentic/agent-llm-traces`](https://huggingface.co/datasets/Exgentic/agent-llm-traces)

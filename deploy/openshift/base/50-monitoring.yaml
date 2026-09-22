@@ -49,7 +49,7 @@ stringData:
       metrics_path: /metrics/cadvisor
       scheme: https
       tls_config:
-        insecure_skip_verify: true
+        ca_file: /var/run/secrets/kubernetes.io/serviceaccount/ca.crt
       authorization:
         type: Bearer
         credentials_file: /var/run/secrets/kubernetes.io/serviceaccount/token

@@ -113,6 +113,10 @@ def main(argv: list[str] | None = None) -> int:
     p_col.add_argument("--thanos-host", default=os.environ.get("THANOS_HOST"))
     p_col.add_argument("--openclaw-url", default=os.environ.get("OPENCLAW_URL"))
     p_col.add_argument("--openclaw-api-key", default=os.environ.get("OPENCLAW_TOKEN"))
+    p_col.add_argument(
+        "--insecure-skip-verify", action="store_true",
+        help="disable TLS certificate verification for explicitly approved test endpoints",
+    )
 
     p_der = sub.add_parser("derive", help="Fuse mock/Jaeger/K8s sources into per-turn 5-bucket records")
     p_der.add_argument("--out", required=True)
@@ -208,6 +212,7 @@ def main(argv: list[str] | None = None) -> int:
             thanos_host=args.thanos_host,
             openclaw_url=args.openclaw_url,
             openclaw_api_key=args.openclaw_api_key,
+            insecure_skip_verify=args.insecure_skip_verify,
         )
         print(json.dumps(report, indent=2))
         return 0

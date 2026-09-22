@@ -33,7 +33,7 @@ fsGroup:
 supplementalGroups:
   type: RunAsAny
 seccompProfiles:
-  - "*"
+  - "runtime/default"
 volumes:
   - configMap
   - csi

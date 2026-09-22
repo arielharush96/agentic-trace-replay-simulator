@@ -18,21 +18,37 @@ def current_trace(layer: Path, session_id: str) -> str | None:
         for line in (layer / "mock_edges.jsonl").read_text(encoding="utf-8").splitlines()
         if line.strip()
     ]
-    inputs = [int(edge.get("input_tokens") or 0) for edge in edges if edge.get("session_id") == session_id]
+    session_edges = [edge for edge in edges if edge.get("session_id") == session_id]
+    edge_trace_ids = {
+        str(edge.get("trace_id"))
+        for edge in session_edges
+        if edge.get("trace_id")
+    }
     timing = load(layer / "traces/timing_segments.json")
     by_trace: dict[str, list[dict]] = {}
     for row in timing:
         by_trace.setdefault(str(row.get("trace_id") or ""), []).append(row)
+    # Trace IDs are the authoritative join key.  Token sequences are only a
+    # compatibility fallback because two sessions can have identical inputs.
+    matching_ids = sorted(edge_trace_ids & set(by_trace))
+    if len(matching_ids) == 1:
+        return matching_ids[0]
+    if len(matching_ids) > 1:
+        return None
+
+    inputs = [int(edge.get("input_tokens") or 0) for edge in session_edges]
+    candidates: list[str] = []
     for trace_id, rows in by_trace.items():
         ordered = sorted(rows, key=lambda row: row.get("turn_idx", 0))
         trace_inputs = [int(row.get("input_tokens") or 0) for row in ordered]
         for start in range(0, len(inputs) - len(trace_inputs) + 1):
             window = inputs[start:start + len(trace_inputs)]
             if trace_inputs == window:
-                return trace_id
+                candidates.append(trace_id)
+                break
         if trace_inputs == inputs:
-            return trace_id
-    return None
+            candidates.append(trace_id)
+    return candidates[0] if len(set(candidates)) == 1 else None
 
 
 def overhead(row: dict) -> float:

@@ -22,7 +22,7 @@ def appworld_command(session_id: str, turn: int, call: int, name: str, arguments
         "import base64,json,os,urllib.request;"
         f"p=json.loads(base64.b64decode('{payload}'));"
         f"r=urllib.request.Request(os.environ.get('APPWORLD_API_URL','{endpoint}'),"
-        "data=json.dumps(p).encode(),headers={'Content-Type':'application/json'});"
+        "data=json.dumps(p).encode(),headers={'Content-Type':'application/json',**({'Authorization':'Bearer '+os.environ['APPWORLD_API_TOKEN']} if os.environ.get('APPWORLD_API_TOKEN') else {})});"
         "response=json.loads(urllib.request.urlopen(r,timeout=180).read());"
         "print(response.get('result',''),end='')"
     )

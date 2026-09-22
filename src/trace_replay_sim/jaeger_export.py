@@ -32,10 +32,11 @@ DEFAULT_JAEGER = "http://localhost:16686"
 MAX_RETRIES = 3
 
 
-def _get(url: str) -> dict[str, Any]:
+def _get(url: str, *, insecure_skip_verify: bool = False) -> dict[str, Any]:
     ctx = ssl.create_default_context()
-    ctx.check_hostname = False
-    ctx.verify_mode = ssl.CERT_NONE
+    if insecure_skip_verify:
+        ctx.check_hostname = False
+        ctx.verify_mode = ssl.CERT_NONE
     for attempt in range(MAX_RETRIES):
         try:
             with urllib.request.urlopen(url, context=ctx, timeout=30) as resp:
@@ -54,6 +55,8 @@ def fetch_traces(
     end_us: int,
     limit: int = 2000,
     tags: dict[str, str] | None = None,
+    *,
+    insecure_skip_verify: bool = False,
 ) -> list[dict[str, Any]]:
     query: dict[str, Any] = {
         "service": service,
@@ -66,8 +69,14 @@ def fetch_traces(
     params = urllib.parse.urlencode(query)
     url = f"{base}/api/traces?{params}"
     print(f"  GET {url}", file=sys.stderr)
-    data = _get(url)
-    return data.get("data") or []
+    data = _get(url, insecure_skip_verify=insecure_skip_verify)
+    traces = data.get("data") or []
+    if len(traces) >= limit:
+        raise RuntimeError(
+            f"Jaeger returned the configured limit ({limit}) for {service}; "
+            "increase --limit or narrow the time range to avoid an incomplete export"
+        )
+    return traces
 
 
 def _ns_to_ms(ns: int) -> float:
@@ -388,6 +397,8 @@ def export(
     service: str = "openclaw-gateway",
     services: list[str] | None = None,
     tags: dict[str, str] | None = None,
+    limit: int = 10_000,
+    insecure_skip_verify: bool = False,
 ) -> dict[str, Any]:
     out_dir.mkdir(parents=True, exist_ok=True)
     start_us = int(start.timestamp() * 1_000_000)
@@ -398,7 +409,10 @@ def export(
     traces: list[dict[str, Any]] = []
     seen_trace_ids: set[str] = set()
     for candidate in [service, *(services or [])]:
-        candidate_traces = fetch_traces(jaeger_base, candidate, start_us, end_us, tags=tags)
+        candidate_traces = fetch_traces(
+            jaeger_base, candidate, start_us, end_us, limit=limit, tags=tags,
+            insecure_skip_verify=insecure_skip_verify,
+        )
         print(f"  service={candidate}: {len(candidate_traces)} traces found")
         for trace in candidate_traces:
             trace_id = str(trace.get("traceID") or "")
@@ -458,6 +472,8 @@ def main(argv: list[str] | None = None) -> int:
     parser.add_argument("--end", required=True, help="ISO 8601 end time")
     parser.add_argument("--jaeger", default=DEFAULT_JAEGER)
     parser.add_argument("--service", default="openclaw-gateway")
+    parser.add_argument("--limit", type=int, default=10_000)
+    parser.add_argument("--insecure-skip-verify", action="store_true")
     args = parser.parse_args(argv)
 
     def parse_iso(s: str) -> datetime:
@@ -471,6 +487,8 @@ def main(argv: list[str] | None = None) -> int:
         end=parse_iso(args.end),
         jaeger_base=args.jaeger,
         service=args.service,
+        limit=args.limit,
+        insecure_skip_verify=args.insecure_skip_verify,
     )
     return 0
 
