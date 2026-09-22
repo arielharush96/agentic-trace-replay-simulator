@@ -22,6 +22,8 @@ from pathlib import Path
 from typing import Any
 
 
+# The monitoring endpoint is deployment-specific and must be supplied by the
+# caller.  Never bake a cluster hostname into the benchmark package.
 DEFAULT_THANOS = ""
 
 
@@ -156,14 +158,18 @@ def collect(
     thanos_host: str | None = None,
     openclaw_pod: str | None = None,
     openclaw_url: str | None = None,
-    openclaw_api_key: str = "",
+    openclaw_api_key: str | None = None,
 ) -> dict[str, Any]:
-    token = oc_token()
-    if not token:
-        print("WARNING: could not obtain oc token for Thanos", file=sys.stderr)
     host = thanos_host or os.environ.get("THANOS_HOST", DEFAULT_THANOS)
+    token = oc_token() if host else ""
+    if host and not token:
+        print("WARNING: could not obtain oc token for Thanos", file=sys.stderr)
     out_dir.mkdir(parents=True, exist_ok=True)
     report: dict[str, Any] = {"host": host, "start": start, "end": end, "metrics": [], "warnings": []}
+    if not host:
+        report["warnings"].append(
+            "THANOS_HOST is not configured; Prometheus range queries are skipped"
+        )
 
     # cAdvisor container metrics at 1s. The v2 monitoring manifest installs a
     # dedicated 1-second scrape job; do not silently downsample this source.
@@ -172,7 +178,11 @@ def collect(
     # Query a buffer so local counter-delta calculation has samples around the
     # workload boundaries.
     for name, query in cadvisor_queries(ns_openclaw, ns_openshell, openclaw_pod).items():
-        result = query_range(token, host, query, max(0, start - 300), end + 60, step="1s") if token else None
+        result = (
+            query_range(token, host, query, max(0, start - 300), end + 60, step="1s")
+            if token and host
+            else None
+        )
         if _has_data(result):
             cadvisor_success += 1
         path = out_dir / f"{name}.json"
@@ -186,7 +196,7 @@ def collect(
     oc_dir.mkdir(exist_ok=True)
     app_success = 0
     for name, query in openclaw_app_queries().items():
-        result = query_range(token, host, query, start, end, step="1s") if token else None
+        result = query_range(token, host, query, start, end, step="1s") if token and host else None
         if _has_data(result):
             app_success += 1
         path = oc_dir / f"{name}.json"
@@ -198,7 +208,12 @@ def collect(
     # Fallback: direct scrape if Thanos app metrics are empty
     if app_success == 0 and openclaw_url:
         print("  Thanos app metrics empty — trying direct scrape fallback...")
-        text = direct_scrape_openclaw(openclaw_url, openclaw_api_key)
+        api_key = openclaw_api_key or os.environ.get("OPENCLAW_TOKEN", "")
+        text = direct_scrape_openclaw(openclaw_url, api_key) if api_key else None
+        if not api_key:
+            report["warnings"].append(
+                "OPENCLAW_TOKEN is not configured; direct scrape fallback skipped"
+            )
         if text:
             (oc_dir / "direct_scrape.txt").write_text(text, encoding="utf-8")
             metrics = parse_prometheus_text(text)
