@@ -72,11 +72,13 @@ def _pct(values: list[float], p: float) -> float:
     return ordered[idx]
 
 
-def load_sessions(path: Path, limit: int | None = None) -> list[dict[str, Any]]:
+def load_sessions(path: Path, limit: int | None = None, shard_index: int = 0, shard_count: int = 1) -> list[dict[str, Any]]:
     payload = json.loads(path.read_text(encoding="utf-8"))
     sessions = payload.get("sessions") or []
     if limit is not None:
         sessions = sessions[:limit]
+    if shard_count > 1:
+        sessions = [session for index, session in enumerate(sessions) if index % shard_count == shard_index]
     return sessions
 
 
@@ -336,19 +338,39 @@ def drive(
     timeout: float,
     stream: bool,
     export_spans: bool = True,
+    shard_index: int = 0,
+    shard_count: int = 1,
+    prewarm: bool = False,
 ) -> dict[str, Any]:
-    sessions = load_sessions(corpus, limit=limit)
+    sessions = load_sessions(corpus, limit=limit, shard_index=shard_index, shard_count=shard_count)
     out_dir.mkdir(parents=True, exist_ok=True)
     started = time.time()
     results: list[RequestResult] = []
     run_nonce = uuid.uuid4().hex[:10]
+    def run_session(session: dict[str, Any]) -> RequestResult:
+        session_id = str(session.get("session_id") or "unknown")
+        user_key = f"trace-replay:{session_id}:{run_nonce}"
+        if prewarm:
+            warmup_prompt = (
+                f"REPLAY_SESSION_ID={session_id}\n"
+                "REPLAY_WARMUP=1\n"
+                f"<!--replay-session:{session_id}-->\n"
+                "Prepare the execution environment and reply with warmup."
+            )
+            run_one(
+                session, layer=layer, url=url, model=model, token=token,
+                timeout=timeout, stream=stream, export_spans=export_spans,
+                prompt_override=warmup_prompt, user_key=user_key,
+            )
+        return run_one(
+            session, layer=layer, url=url, model=model, token=token,
+            timeout=timeout, stream=stream, export_spans=export_spans,
+            user_key=user_key,
+        )
+
     with ThreadPoolExecutor(max_workers=max(1, concurrency)) as pool:
         futs = [
-            pool.submit(
-                run_one, session, layer=layer, url=url, model=model, token=token,
-                timeout=timeout, stream=stream, export_spans=export_spans,
-                user_key=f"trace-replay:{session.get('session_id')}:{run_nonce}",
-            )
+            pool.submit(run_session, session)
             for session in sessions
         ]
         for fut in as_completed(futs):
@@ -504,6 +526,8 @@ def main(argv: list[str] | None = None) -> int:
     parser.add_argument("--model", default="openclaw/perf_agent")
     parser.add_argument("--token", default=os.environ.get("OPENCLAW_TOKEN", ""))
     parser.add_argument("--concurrency", type=int, default=1)
+    parser.add_argument("--shard-index", type=int, default=0)
+    parser.add_argument("--shard-count", type=int, default=1)
     parser.add_argument("--limit", type=int, default=None)
     parser.add_argument("--timeout", type=float, default=120.0)
     parser.add_argument("--stream", action="store_true")
@@ -526,8 +550,10 @@ def main(argv: list[str] | None = None) -> int:
             corpus=Path(args.corpus), out_dir=Path(args.out), layer=args.layer,
             url=args.url, model=args.model, token=args.token,
             concurrency=args.concurrency, limit=args.limit,
+            shard_index=args.shard_index, shard_count=args.shard_count,
             timeout=args.timeout, stream=args.stream,
             export_spans=not args.no_spans,
+            prewarm=args.prewarm,
         )
     print(json.dumps(summary, indent=2))
     return 0 if summary["errors"] == 0 else 2
