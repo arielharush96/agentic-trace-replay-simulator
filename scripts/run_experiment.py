@@ -133,6 +133,35 @@ def _stop_cgroup_samplers(samplers: list[tuple[subprocess.Popen[str], Any]]) -> 
         handle.close()
 
 
+def _pod_lifecycle(pod: dict[str, Any]) -> dict[str, Any]:
+    """Return the observed creation-to-Ready interval for one sandbox pod."""
+    metadata = pod.get("metadata") or {}
+    creation = metadata.get("creationTimestamp")
+    ready = next(
+        (
+            condition.get("lastTransitionTime")
+            for condition in pod.get("status", {}).get("conditions", [])
+            if condition.get("type") == "Ready" and condition.get("status") == "True"
+        ),
+        None,
+    )
+    result: dict[str, Any] = {
+        "pod": metadata.get("name"),
+        "creation_timestamp": creation,
+        "ready_timestamp": ready,
+        "ready_delta_ms": None,
+        "source": "kubernetes_pod_status",
+    }
+    if creation and ready:
+        try:
+            created_at = datetime.fromisoformat(str(creation).replace("Z", "+00:00"))
+            ready_at = datetime.fromisoformat(str(ready).replace("Z", "+00:00"))
+            result["ready_delta_ms"] = round(max(0.0, (ready_at - created_at).total_seconds() * 1000), 3)
+        except ValueError:
+            pass
+    return result
+
+
 def preflight(cluster: Cluster, agents: int, system_ns: str, openshell_ns: str, appworld: bool) -> None:
     log_phase("preflight: validating cluster, target node and system services")
     context = cluster.run(["config", "current-context"])
@@ -437,8 +466,10 @@ def collect_trace(
     ]
     watcher_stop = threading.Event()
     watcher_errors: list[str] = []
+    sandbox_lifecycle: dict[str, Any] | None = None
 
     def watch_sandbox() -> None:
+        nonlocal sandbox_lifecycle
         while not watcher_stop.wait(0.25):
             try:
                 pods = cluster.json(["-n", openshell_ns, "get", "pods"])
@@ -454,6 +485,7 @@ def collect_trace(
                     if spec.get("nodeName") != cluster.node:
                         watcher_errors.append(f"sandbox {name} scheduled on {spec.get('nodeName')}, expected {cluster.node}")
                         return
+                    sandbox_lifecycle = _pod_lifecycle(pod)
                     containers = [str(item.get("name")) for item in spec.get("containers", [])]
                     container = "agent" if "agent" in containers else (containers[0] if containers else "")
                     if container:
@@ -477,6 +509,10 @@ def collect_trace(
     pod = cluster.run(["-n", cluster.namespace, "get", "pod", "-l", f"job-name={job}", "-o", "jsonpath={.items[0].metadata.name}"]).strip()
     shell = trace_dir / "data/shell"
     shell.mkdir(parents=True, exist_ok=True)
+    (shell / "sandbox_lifecycle.json").write_text(
+        json.dumps(sandbox_lifecycle or {"source": "kubernetes_pod_status", "ready_delta_ms": None}, indent=2),
+        encoding="utf-8",
+    )
     (shell / "terminal.log").write_text(cluster.run(["-n", cluster.namespace, "logs", pod], check=False))
     cluster.run(["-n", cluster.namespace, "cp", f"{pod}:/results/.", str(shell)], check=False)
     # The mock edge recorder is the authoritative source for model TTFB and
@@ -536,7 +572,14 @@ def collect_trace(
     if matched == 0:
         raise RuntimeError(f"No Jaeger traces matched session/time window for {session_id}")
     collect_prometheus(shell / "prometheus", start=start, end=end, ns_openclaw=cluster.namespace, ns_openshell=openshell_ns, openclaw_pod=openclaw_pod)
-    profile_v2(traces=traces / "raw_traces.json", mock_edges=shell / "mock_edges.jsonl", prom=shell / "prometheus", out=shell / "profile-v2", driver_requests=shell / "terminal.log")
+    profile_v2(
+        traces=traces / "raw_traces.json",
+        mock_edges=shell / "mock_edges.jsonl",
+        prom=shell / "prometheus",
+        out=shell / "profile-v2",
+        driver_requests=shell / "terminal.log",
+        sandbox_lifecycle=shell / "sandbox_lifecycle.json",
+    )
     analyze_per_turn(traces, shell / "prometheus", trace_dir / "analysis")
     session_events: list[str] = []
     if appworld:

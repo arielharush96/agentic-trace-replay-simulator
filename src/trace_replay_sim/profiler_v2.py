@@ -821,7 +821,15 @@ def _plots(rows: list[dict[str, Any]], prom_dir: Path | None, out: Path) -> list
     return files
 
 
-def profile(*, traces: Path, mock_edges: Path | None, out: Path, prom: Path | None = None, driver_requests: Path | None = None) -> dict[str, Any]:
+def profile(
+    *,
+    traces: Path,
+    mock_edges: Path | None,
+    out: Path,
+    prom: Path | None = None,
+    driver_requests: Path | None = None,
+    sandbox_lifecycle: Path | None = None,
+) -> dict[str, Any]:
     raw = _load_json(traces)
     if isinstance(raw, dict):
         raw = raw.get("data") or raw.get("traces") or []
@@ -831,6 +839,14 @@ def profile(*, traces: Path, mock_edges: Path | None, out: Path, prom: Path | No
     if edge_trace_ids:
         raw = [trace for trace in raw if str(trace.get("traceID") or "") in edge_trace_ids]
     rows = build_rows(raw, edges, driver_requests_rows)
+    lifecycle = {}
+    if sandbox_lifecycle and sandbox_lifecycle.exists():
+        loaded = _load_json(sandbox_lifecycle)
+        lifecycle = loaded if isinstance(loaded, dict) else {}
+    init_ms = _number(lifecycle.get("ready_delta_ms"))
+    if rows and init_ms is not None:
+        rows[0]["sandbox_init_ms"] = round(init_ms, 3)
+        rows[0]["sandbox_init_source"] = "kubernetes_pod_status"
     out.mkdir(parents=True, exist_ok=True)
     (out / "per_turn.json").write_text(json.dumps(rows, indent=2), encoding="utf-8")
     if rows:
@@ -863,7 +879,7 @@ def profile(*, traces: Path, mock_edges: Path | None, out: Path, prom: Path | No
             "prompt_boundary_ms": _stats([row["prompt_boundary_ms"] for row in rows if row.get("prompt_boundary_ms") is not None]),
             "response_processing_ms": _stats([row["response_processing_full_ms"] for row in rows if row.get("response_processing_full_ms") is not None]),
             "sandbox_execution_ms": _stats([row["exec_ms"] for row in rows if row.get("exec_ms") is not None]),
-            "sandbox_initialization_ms": _stats([row["pre_model_sandbox_access_ms"] for row in rows if row.get("pre_model_sandbox_access_ms") is not None]),
+            "sandbox_initialization_ms": _stats([row["sandbox_init_ms"] for row in rows if row.get("sandbox_init_ms") is not None]),
             "sandbox_cold_exec_ms": _stats([row["sandbox_cold_exec_ms"] for row in rows if row.get("sandbox_cold_exec_ms") is not None]),
         },
         "context_evidence": {
@@ -880,7 +896,7 @@ def profile(*, traces: Path, mock_edges: Path | None, out: Path, prom: Path | No
             "response_processing_ms": "openclaw.model.call end to first tool start or next model start.",
             "response_processing_full_ms": "First streamed model event to next prompt minus mock decode and sandbox execution; baseline-style agent processing bucket.",
             "sandbox_execution_ms": "Sum of openclaw.exec spans, falling back to openclaw.tool.execution when the newer schema omits openclaw.exec.",
-            "sandbox_initialization_ms": "Pre-LLM sandbox access is not emitted by the current OpenClaw span schema and is therefore reported as unavailable rather than inferred from a post-LLM exec.",
+            "sandbox_initialization_ms": "Kubernetes sandbox pod creationTimestamp to Ready transition; unavailable when the lifecycle artifact was not captured.",
             "sandbox_cold_exec_ms": "Compatibility field containing the first actual openclaw.exec command duration; it is command execution and must not be interpreted as cold-start or warm-pool initialization.",
             "context_per_turn_latency": "Measured through the driver/mock prompt boundary because the native OpenClaw event is run-level only.",
             "prompt_boundary_ms": "Driver send to the first mock prompt, then previous mock turn end to the next mock prompt; includes all OpenClaw work in that observable boundary.",
@@ -910,9 +926,10 @@ def main(argv: list[str] | None = None) -> int:
     parser.add_argument("--mock-edges", type=Path)
     parser.add_argument("--prom", type=Path)
     parser.add_argument("--driver-requests", type=Path)
+    parser.add_argument("--sandbox-lifecycle", type=Path)
     parser.add_argument("--out", required=True, type=Path)
     args = parser.parse_args(argv)
-    print(json.dumps(profile(traces=args.traces, mock_edges=args.mock_edges, prom=args.prom, driver_requests=args.driver_requests, out=args.out), indent=2))
+    print(json.dumps(profile(traces=args.traces, mock_edges=args.mock_edges, prom=args.prom, driver_requests=args.driver_requests, sandbox_lifecycle=args.sandbox_lifecycle, out=args.out), indent=2))
     return 0
 
 
