@@ -52,7 +52,6 @@ def main() -> int:
     parser.add_argument("--experiment", type=Path, required=True)
     args = parser.parse_args()
     for trace in sorted(args.experiment.glob("[0-9][0-9]-*")):
-        plots = trace / "plots-analysis"
         session = trace.name.split("-", 1)[1].split("__", 1)[0]
         plot_events(trace / "data/appworld/events.jsonl", trace / "data/appworld/appworld_api_latency.png", f"Shell AppWorld API latency: {session}")
         plot_events(trace / "data/openclaw/appworld/events.jsonl", trace / "data/openclaw/appworld/appworld_api_latency.png", f"Plain OpenClaw AppWorld API latency: {session}")

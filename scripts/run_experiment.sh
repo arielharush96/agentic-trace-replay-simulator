@@ -22,6 +22,7 @@ KUBECONFIG_PATH="${KUBECONFIG:-$HOME/.kube/config}"
 MODE=""
 REUSE_AGENTS=0
 RETRIES=1
+APPWORLD=0
 
 usage() {
   sed -n '1,45p' "$0"
@@ -46,6 +47,7 @@ while (($#)); do
     --plan) MODE="plan"; shift ;;
     --execute) MODE="execute"; shift ;;
     --reuse-agents) REUSE_AGENTS=1; shift ;;
+    --appworld) APPWORLD=1; shift ;;
     --retries) RETRIES="$2"; shift 2 ;;
     -h|--help) usage; exit 0 ;;
     *) die "unknown argument: $1" ;;
@@ -80,6 +82,7 @@ phase "corpus=$CORPUS"
 phase "output=$OUT"
 phase "agents=$AGENTS traces_per_workload=$TRACES_PER_WORKLOAD node=$NODE"
 phase "namespace=$NAMESPACE system_namespace=$SYSTEM_NAMESPACE openshell_namespace=$OPENSHELL_NAMESPACE"
+phase "appworld=$APPWORLD"
 
 if ! command -v "$PYTHON_BIN" >/dev/null 2>&1; then
   die "python executable not found: $PYTHON_BIN"
@@ -98,6 +101,9 @@ if [[ "$MODE" == plan ]]; then
   fi
   if [[ -n "$REQUIRE_TRACES" ]]; then
     PLAN_ARGS+=(--require-traces "$REQUIRE_TRACES")
+  fi
+  if ((APPWORLD)); then
+    PLAN_ARGS+=(--appworld)
   fi
   "$PYTHON_BIN" "$ROOT/scripts/run_experiment.py" "${PLAN_ARGS[@]}" 2>&1 | tee -a "$LOG_FILE"
   exit "${PIPESTATUS[0]}"
@@ -122,6 +128,9 @@ if [[ -n "$SESSION_ID" ]]; then
 fi
 if ((REUSE_AGENTS)); then
   ARGS+=(--reuse-agents)
+fi
+if ((APPWORLD)); then
+  ARGS+=(--appworld)
 fi
 
 set +e

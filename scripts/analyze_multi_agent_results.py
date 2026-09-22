@@ -28,9 +28,15 @@ def percentile(values: list[float], fraction: float) -> float | None:
 
 def prom_values(path: Path) -> list[float]:
     payload = load(path, {})
+    if not isinstance(payload, dict):
+        return []
+    data = payload.get("data")
+    if not isinstance(data, dict):
+        return []
     return [
         float(value)
-        for series in (payload.get("data") or {}).get("result") or []
+        for series in data.get("result") or []
+        if isinstance(series, dict)
         for _, value in series.get("values") or []
         if value not in ("NaN", "Inf", "+Inf", "-Inf")
     ]

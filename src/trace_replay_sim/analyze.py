@@ -181,8 +181,8 @@ def _build_report_md(layers: list[dict], timing: dict | None, q_analysis: dict |
 
     # Key findings
     if layers:
-        mock_direct = next((l for l in layers if l["layer"] == "mock-direct"), None)
-        openclaw = next((l for l in layers if l["layer"] == "openclaw"), None)
+        mock_direct = next((layer for layer in layers if layer["layer"] == "mock-direct"), None)
+        openclaw = next((layer for layer in layers if layer["layer"] == "openclaw"), None)
         if mock_direct and openclaw:
             overhead = (openclaw["latency"]["e2e_p50_ms"] or 0) - (mock_direct["latency"]["e2e_p50_ms"] or 0)
             lines += [
@@ -239,7 +239,7 @@ def _build_report_md(layers: list[dict], timing: dict | None, q_analysis: dict |
             lines.append("")
 
     # Resource utilization
-    res_layers = [l for l in layers if l.get("resources")]
+    res_layers = [layer for layer in layers if layer.get("resources")]
     if res_layers:
         lines += [
             "## Resource Utilization (Prometheus/cAdvisor)",
@@ -274,8 +274,8 @@ def _build_report_md(layers: list[dict], timing: dict | None, q_analysis: dict |
                     if assessment:
                         lines.append(f"**Assessment**: {assessment}")
                     if implication:
-                        lines.append(f"")
-                        lines.append(f"{implication}")
+                        lines.append("")
+                        lines.append(implication)
                     # Add key metrics
                     for k, v in val.items():
                         if k in ("status", "assessment", "implication"):

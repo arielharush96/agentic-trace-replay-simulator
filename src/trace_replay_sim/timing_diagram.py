@@ -94,7 +94,7 @@ def generate_session_waterfall(rows: list[dict], out_path: Path,
     ax.set_xlabel("Latency (ms)")
     ax.set_title(f"{title} ({n} turns)")
     ax.invert_yaxis()
-    ax.legend(handles=[mpatches.Patch(color=c, label=l) for _k, l, c in buckets],
+    ax.legend(handles=[mpatches.Patch(color=color, label=label) for _key, label, color in buckets],
               loc="lower right", fontsize=8)
     plt.tight_layout()
     fig.savefig(out_path, dpi=150, bbox_inches="tight")
@@ -108,7 +108,7 @@ def generate_avg_breakdown(rows: list[dict], out_path: Path,
     if not rows:
         return
     buckets = buckets if buckets is not None else BUCKETS
-    labels = [l for _k, l, _c in buckets]
+    labels = [label for _key, label, _color in buckets]
     colors = [c for _k, _l, c in buckets]
     means = []
     for key, _l, _c in buckets:
@@ -139,13 +139,13 @@ def generate_layer_comparison(results_dir: Path, out_path: Path) -> None:
     if not layers:
         return
     fig, axes = plt.subplots(1, 2, figsize=(12, 5))
-    names = [l["name"] for l in layers]
+    names = [layer["name"] for layer in layers]
     x = np.arange(len(names))
     w = 0.35
     for ax, (p50k, p95k, ttl) in zip(axes, [("e2e_p50", "e2e_p95", "End-to-End Latency"),
                                             ("ttft_p50", "ttft_p95", "Time to First Token")]):
-        ax.bar(x - w / 2, [l[p50k] for l in layers], w, label="P50", color="#3B82F6")
-        ax.bar(x + w / 2, [l[p95k] for l in layers], w, label="P95", color="#F59E0B")
+        ax.bar(x - w / 2, [layer[p50k] for layer in layers], w, label="P50", color="#3B82F6")
+        ax.bar(x + w / 2, [layer[p95k] for layer in layers], w, label="P95", color="#F59E0B")
         ax.set_xticks(x)
         ax.set_xticklabels(names)
         ax.set_ylabel("Latency (ms)")
