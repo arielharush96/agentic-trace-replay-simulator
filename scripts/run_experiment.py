@@ -332,6 +332,18 @@ def create_trace_job(cluster: Cluster, item: dict[str, Any], agent: str, out: Pa
     if not cluster.run(["-n", cluster.namespace, "get", "configmap", cm], check=False).strip():
         cluster.run(["-n", cluster.namespace, "create", "configmap", cm, f"--from-file=replay.json={corpus_path}"])
     appworld = cluster.run(["-n", system_ns, "get", "pod", "-l", "app=appworld", "-o", "jsonpath={.items[0].metadata.name}"]).strip()
+    driver_env: list[dict[str, Any]] = []
+    token_secret = os.environ.get("OPENCLAW_TOKEN_SECRET")
+    if token_secret:
+        driver_env.append({
+            "name": "OPENCLAW_TOKEN",
+            "valueFrom": {
+                "secretKeyRef": {
+                    "name": token_secret,
+                    "key": os.environ.get("OPENCLAW_TOKEN_SECRET_KEY", "token"),
+                }
+            },
+        })
     job_obj = {
         "apiVersion": "batch/v1", "kind": "Job",
         "metadata": {"name": job, "labels": {"app": "aharush-experiment", "workload": workload}},
@@ -340,7 +352,8 @@ def create_trace_job(cluster: Cluster, item: dict[str, Any], agent: str, out: Pa
             "spec": {"restartPolicy": "Never", "nodeSelector": {"kubernetes.io/hostname": cluster.node}, "containers": [{
                 "name": "driver", "image": "python:3.12-slim", "command": ["python", "/app/driver.py"],
                 # Match the established profiler-v2 replay semantics exactly.
-                "args": ["--corpus", "/data/replay.json", "--out", "/results", "--layer", "shell", "--url", f"http://{agent}.{cluster.namespace}.svc.cluster.local:18790", "--model", "openclaw/perf_agent", "--token", "REDACTED_TOKEN", "--timeout", "1800", "--stream", "--prewarm"],
+                "args": ["--corpus", "/data/replay.json", "--out", "/results", "--layer", "shell", "--url", f"http://{agent}.{cluster.namespace}.svc.cluster.local:18790", "--model", "openclaw/perf_agent", "--timeout", "1800", "--stream", "--prewarm"],
+                "env": driver_env,
                 "volumeMounts": [{"name": "source", "mountPath": "/app"}, {"name": "corpus", "mountPath": "/data"}, {"name": "results", "mountPath": "/results"}],
             }], "volumes": [{"name": "source", "configMap": {"name": "aharush-experiment-driver"}}, {"name": "corpus", "configMap": {"name": cm}}, {"name": "results", "emptyDir": {}}]}
         }},
@@ -551,7 +564,7 @@ def main() -> int:
     parser.add_argument("--namespace", default="trace-replay")
     parser.add_argument("--system-namespace", default="trace-replay")
     parser.add_argument("--openshell-namespace", default="openshell-tracesim")
-    parser.add_argument("--node", default="benchmark-node.example.invalid")
+    parser.add_argument("--node", default=os.environ.get("TARGET_NODE"))
     parser.add_argument("--kubeconfig", default=os.environ.get("KUBECONFIG"))
     parser.add_argument("--jaeger", default="http://127.0.0.1:16686")
     parser.add_argument("--reuse-agents", action="store_true")

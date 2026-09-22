@@ -4,6 +4,7 @@ from __future__ import annotations
 
 import argparse
 import json
+import os
 from pathlib import Path
 
 from trace_replay_sim.analyze import write_report
@@ -109,6 +110,9 @@ def main(argv: list[str] | None = None) -> int:
     p_col.add_argument("--ns-openclaw", default="trace-replay")
     p_col.add_argument("--ns-openshell", default="openshell-tracesim")
     p_col.add_argument("--openclaw-pod", default=None)
+    p_col.add_argument("--thanos-host", default=os.environ.get("THANOS_HOST"))
+    p_col.add_argument("--openclaw-url", default=os.environ.get("OPENCLAW_URL"))
+    p_col.add_argument("--openclaw-api-key", default=os.environ.get("OPENCLAW_TOKEN"))
 
     p_der = sub.add_parser("derive", help="Fuse mock/Jaeger/K8s sources into per-turn 5-bucket records")
     p_der.add_argument("--out", required=True)
@@ -201,6 +205,9 @@ def main(argv: list[str] | None = None) -> int:
             ns_openclaw=args.ns_openclaw,
             ns_openshell=args.ns_openshell,
             openclaw_pod=args.openclaw_pod,
+            thanos_host=args.thanos_host,
+            openclaw_url=args.openclaw_url,
+            openclaw_api_key=args.openclaw_api_key,
         )
         print(json.dumps(report, indent=2))
         return 0

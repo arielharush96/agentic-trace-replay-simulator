@@ -17,8 +17,8 @@ SESSION_ID=""
 NAMESPACE="trace-replay"
 SYSTEM_NAMESPACE="trace-replay"
 OPENSHELL_NAMESPACE="openshell-tracesim"
-NODE="benchmark-node.example.invalid"
-KUBECONFIG_PATH="${KUBECONFIG:-/path/to/kubeconfig}"
+NODE="${TARGET_NODE:-}"
+KUBECONFIG_PATH="${KUBECONFIG:-$HOME/.kube/config}"
 MODE=""
 REUSE_AGENTS=0
 RETRIES=1
@@ -55,6 +55,7 @@ done
 [ -n "$CORPUS" ] || die "--corpus is required"
 [ -n "$OUT" ] || die "--out is required"
 [ -f "$CORPUS" ] || die "corpus not found: $CORPUS"
+[ -n "$NODE" ] || die "--node or TARGET_NODE is required"
 [[ "$MODE" == plan || "$MODE" == execute ]] || die "choose exactly one of --plan or --execute"
 [[ "$AGENTS" =~ ^[1-9]$ ]] || die "--agents must be 1..9"
 [[ "$TRACES_PER_WORKLOAD" =~ ^[1-9][0-9]*$ ]] || die "--traces-per-workload must be positive"
