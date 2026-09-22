@@ -178,6 +178,92 @@ def plot_parallel_timing(trace_paths: list[Path], out: Path, summary_rows: list[
     plt.close(fig)
 
 
+def _load_cgroup_series(path: Path) -> tuple[list[tuple[float, float]], list[tuple[float, float]]]:
+    """Return (CPU cores, memory MiB) samples from one run-local cgroup."""
+    try:
+        rows = [
+            (
+                float(row["epoch_ns"]) / 1e9,
+                float(row["cpu_usage_usec"]),
+                float(row["memory_bytes"]) / 1024 / 1024,
+            )
+            for row in csv.DictReader(path.open(encoding="utf-8"))
+        ]
+    except (OSError, KeyError, TypeError, ValueError):
+        return [], []
+    if len(rows) < 2:
+        return [], [(timestamp, memory) for timestamp, _, memory in rows]
+    cpu: list[tuple[float, float]] = []
+    for previous, current in zip(rows, rows[1:]):
+        delta_s = current[0] - previous[0]
+        delta_cpu = current[1] - previous[1]
+        if delta_s > 0 and delta_cpu >= 0:
+            cpu.append(((previous[0] + current[0]) / 2, delta_cpu / (delta_s * 1_000_000)))
+    memory = [(timestamp, value) for timestamp, _, value in rows]
+    return cpu, memory
+
+
+def plot_parallel_resources(trace_paths: list[Path], out: Path) -> None:
+    """Plot run-local OpenClaw and sandbox resources on a shared time axis."""
+    import matplotlib.pyplot as plt
+
+    series: list[tuple[str, list[tuple[float, float]], list[tuple[float, float]]]] = []
+    for trace in trace_paths:
+        metadata = load(trace / "trace.json", {})
+        agent = str(metadata.get("agent") or trace.name)
+        cgroup = trace / "data/shell/prometheus/cgroup"
+        openclaw_cpu, openclaw_memory = _load_cgroup_series(cgroup / "openclaw_gateway.csv")
+        sandbox_cpu, sandbox_memory = _load_cgroup_series(cgroup / "openshell_sandbox.csv")
+        if openclaw_cpu or openclaw_memory or sandbox_cpu or sandbox_memory:
+            series.append((agent, (openclaw_cpu, sandbox_cpu), (openclaw_memory, sandbox_memory)))
+    if not series:
+        return
+
+    all_times = [
+        timestamp
+        for _, cpu_series, memory_series in series
+        for component in (*cpu_series, *memory_series)
+        for timestamp, _ in component
+    ]
+    origin = min(all_times)
+    colors = ["#2563EB", "#EA580C", "#16A34A", "#9333EA"]
+    fig, axes = plt.subplots(2, 1, figsize=(16, 8), sharex=True)
+    for index, (agent, cpu_series, memory_series) in enumerate(series):
+        color = colors[index % len(colors)]
+        for component_index, component in enumerate(cpu_series):
+            if component:
+                axes[0].plot(
+                    [(timestamp - origin) for timestamp, _ in component],
+                    [value for _, value in component],
+                    color=color,
+                    linestyle="-" if component_index == 0 else "--",
+                    linewidth=1.4,
+                    label=f"{agent} {'OpenClaw' if component_index == 0 else 'OpenShell sandbox'}",
+                )
+        for component_index, component in enumerate(memory_series):
+            if component:
+                axes[1].plot(
+                    [(timestamp - origin) for timestamp, _ in component],
+                    [value for _, value in component],
+                    color=color,
+                    linestyle="-" if component_index == 0 else "--",
+                    linewidth=1.4,
+                    label=f"{agent} {'OpenClaw' if component_index == 0 else 'OpenShell sandbox'}",
+                )
+    axes[0].set_ylabel("CPU cores")
+    axes[1].set_ylabel("Memory MiB")
+    axes[1].set_xlabel("Seconds from first measured agent event")
+    axes[0].set_title("Parallel multi-agent resource timeline: CPU")
+    axes[1].set_title("Parallel multi-agent resource timeline: memory")
+    for axis in axes:
+        axis.grid(alpha=0.25)
+        axis.legend(fontsize=8, ncol=2, loc="upper right")
+    fig.suptitle("Parallel multi-agent resources: OpenClaw and OpenShell sandbox")
+    fig.tight_layout()
+    fig.savefig(out / "parallel_resource_timeline.png", dpi=160)
+    plt.close(fig)
+
+
 def summarize_trace(trace: Path) -> dict[str, Any]:
     shell = trace / "data/shell"
     timing = load(shell / "traces/timing_segments.json", [])
@@ -323,6 +409,7 @@ def plot_groups(rows: list[dict[str, Any]], out: Path) -> None:
 
     trace_paths = [out.parent / "traces" / str(row["trace"]) for row in rows]
     plot_parallel_timing(trace_paths, out, rows)
+    plot_parallel_resources(trace_paths, out)
 
 
 def main() -> int:
