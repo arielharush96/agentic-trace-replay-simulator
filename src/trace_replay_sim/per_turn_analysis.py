@@ -28,6 +28,53 @@ def _load(path: Path) -> Any:
     return json.loads(path.read_text(encoding="utf-8"))
 
 
+def _profile_context_scaling(rows: list[dict]) -> dict[str, Any]:
+    """Analyze the per-turn boundary that is available in profiler-v2.
+
+    OpenClaw currently emits its native context span once at agent-run scope.
+    The profiler therefore records the driver/mock prompt boundary for each
+    turn.  It is the correct repeated-turn observable for scaling, while the
+    one run-level native span remains reported separately in profile-v2.
+    """
+    usable = []
+    for row in rows:
+        tokens = row.get("input_tokens") or row.get("mock_input_tokens")
+        boundary = row.get("context_assembly_window_ms")
+        if boundary is None:
+            boundary = row.get("prompt_boundary_ms")
+        if tokens is not None and boundary is not None:
+            usable.append((int(row.get("turn") or 0), float(tokens), float(boundary)))
+    if not usable:
+        return {"status": "no_data", "source": "profile-v2/per_turn.json"}
+    tokens = [item[1] for item in usable]
+    times = [item[2] for item in usable]
+    token_mean = statistics.mean(tokens)
+    time_mean = statistics.mean(times)
+    token_sd = statistics.stdev(tokens) if len(tokens) > 1 else 0.0
+    time_sd = statistics.stdev(times) if len(times) > 1 else 0.0
+    correlation = None
+    if token_sd and time_sd:
+        correlation = sum((t - token_mean) * (a - time_mean) for t, a in zip(tokens, times)) / (len(tokens) - 1) / token_sd / time_sd
+    ordered = sorted(usable, key=lambda item: item[1])
+    third = max(1, len(ordered) // 3)
+    low = [item[2] for item in ordered[:third]]
+    high = [item[2] for item in ordered[-third:]]
+    return {
+        "status": "ok",
+        "source": "profile-v2/per_turn.json:context_assembly_window_ms",
+        "total_rows": len(usable),
+        "context_boundary_p50_ms": round(_pct(times, 50), 2),
+        "context_boundary_p95_ms": round(_pct(times, 95), 2),
+        "token_range": [min(tokens), max(tokens)],
+        "pearson_r_tokens_vs_boundary": round(correlation, 3) if correlation is not None else None,
+        "assembly_ms_low_tokens": round(statistics.mean(low), 2),
+        "assembly_ms_high_tokens": round(statistics.mean(high), 2),
+        "per_turn_mean_ms": {str(turn): round(boundary, 2) for turn, _, boundary in usable},
+        "assessment": "scaling_signal" if correlation is not None and correlation > 0.5 else "no_clear_linear_signal",
+        "note": "This is the repeated-turn driver/mock boundary; the native OpenClaw context span is run-level in this OpenClaw build.",
+    }
+
+
 def _pct(vals: list[float], p: float) -> float:
     if not vals:
         return 0.0
@@ -271,6 +318,41 @@ def q5_memory_per_session(prom_dir: Path, session_count: int) -> dict[str, Any]:
     return result
 
 
+def q5_cgroup_memory_cpu(prom_dir: Path, session_count: int) -> dict[str, Any]:
+    """Use the authoritative cgroup-v2 samples when Prometheus app metrics are absent."""
+    result: dict[str, Any] = {"status": "no_data", "source": "prometheus/cgroup/*.csv", "session_count": session_count}
+    components: dict[str, dict[str, float | int | None]] = {}
+    for path in sorted((prom_dir / "cgroup").glob("*.csv")):
+        try:
+            rows = [
+                (float(row["epoch_ns"]) / 1e9, float(row["cpu_usage_usec"]), float(row["memory_bytes"]))
+                for row in __import__("csv").DictReader(path.open(encoding="utf-8"))
+            ]
+        except (OSError, KeyError, TypeError, ValueError):
+            continue
+        if len(rows) < 2:
+            continue
+        cpu = []
+        for previous, current in zip(rows, rows[1:]):
+            delta_s = current[0] - previous[0]
+            delta_cpu = current[1] - previous[1]
+            if delta_s > 0 and delta_cpu >= 0:
+                cpu.append(delta_cpu / (delta_s * 1_000_000))
+        components[path.stem] = {
+            "samples": len(rows),
+            "cpu_peak_cores": round(max(cpu), 4) if cpu else None,
+            "cpu_mean_cores": round(statistics.mean(cpu), 4) if cpu else None,
+            "memory_peak_mib": round(max(row[2] for row in rows) / 1024 / 1024, 2),
+            "memory_mean_mib": round(statistics.mean(row[2] for row in rows) / 1024 / 1024, 2),
+        }
+    if components:
+        result["status"] = "ok"
+        result["components"] = components
+        result["openclaw_gateway"] = components.get("openclaw_gateway")
+        result["openshell_sandbox"] = components.get("openshell_sandbox")
+    return result
+
+
 # ---------------------------------------------------------------------------
 # Main
 # ---------------------------------------------------------------------------
@@ -279,16 +361,23 @@ def analyze(traces_dir: Path, prom_dir: Path, out_dir: Path) -> dict[str, Any]:
     per_turn = _load(traces_dir / "per_turn_segments.json")
     per_tool = _load(traces_dir / "per_tool_segments.json")
     sessions = _load(traces_dir / "session_summary.json")
+    profile_dir = traces_dir.parent / "profile-v2"
+    profile_turns = _load(profile_dir / "per_turn.json")
+    profile_tools = _load(profile_dir / "per_tool.json")
+    if profile_turns:
+        per_turn = profile_turns
+    if profile_tools:
+        per_tool = profile_tools
 
     out_dir.mkdir(parents=True, exist_ok=True)
 
     report = {
         "sessions_analyzed": len(sessions),
-        "Q1_context_assembly_scaling": q1_context_scaling(per_turn),
+        "Q1_context_assembly_scaling": _profile_context_scaling(per_turn) if profile_turns else q1_context_scaling(per_turn),
         "Q2_exec_latency_profile":         q2_exec_latency_profile(per_tool),
         "Q3_tool_parallelism":         q3_parallelism(per_tool),
         "Q4_queue_saturation":         q4_queue_saturation(prom_dir),
-        "Q5_memory_per_session":       q5_memory_per_session(prom_dir, len(sessions)),
+        "Q5_memory_per_session":       q5_cgroup_memory_cpu(prom_dir, len(sessions)) if (prom_dir / "cgroup").exists() else q5_memory_per_session(prom_dir, len(sessions)),
     }
 
     out_file = out_dir / "per_turn_analysis.json"

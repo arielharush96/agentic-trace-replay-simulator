@@ -53,13 +53,17 @@ def fetch_traces(
     start_us: int,
     end_us: int,
     limit: int = 2000,
+    tags: dict[str, str] | None = None,
 ) -> list[dict[str, Any]]:
-    params = urllib.parse.urlencode({
+    query: dict[str, Any] = {
         "service": service,
         "start": start_us,
         "end": end_us,
         "limit": limit,
-    })
+    }
+    if tags:
+        query["tags"] = json.dumps(tags, separators=(",", ":"))
+    params = urllib.parse.urlencode(query)
     url = f"{base}/api/traces?{params}"
     print(f"  GET {url}", file=sys.stderr)
     data = _get(url)
@@ -382,6 +386,8 @@ def export(
     end: datetime,
     jaeger_base: str = DEFAULT_JAEGER,
     service: str = "openclaw-gateway",
+    services: list[str] | None = None,
+    tags: dict[str, str] | None = None,
 ) -> dict[str, Any]:
     out_dir.mkdir(parents=True, exist_ok=True)
     start_us = int(start.timestamp() * 1_000_000)
@@ -389,8 +395,19 @@ def export(
 
     print(f"Fetching traces from {jaeger_base} service={service}")
     print(f"  Time range: {start.isoformat()} → {end.isoformat()}")
-    traces = fetch_traces(jaeger_base, service, start_us, end_us)
-    print(f"  {len(traces)} traces found")
+    traces: list[dict[str, Any]] = []
+    seen_trace_ids: set[str] = set()
+    for candidate in [service, *(services or [])]:
+        candidate_traces = fetch_traces(jaeger_base, candidate, start_us, end_us, tags=tags)
+        print(f"  service={candidate}: {len(candidate_traces)} traces found")
+        for trace in candidate_traces:
+            trace_id = str(trace.get("traceID") or "")
+            if trace_id and trace_id in seen_trace_ids:
+                continue
+            if trace_id:
+                seen_trace_ids.add(trace_id)
+            traces.append(trace)
+    print(f"  {len(traces)} unique traces found")
 
     if not traces:
         print("ERROR: No traces found. Check Jaeger connectivity and time range.", file=sys.stderr)
