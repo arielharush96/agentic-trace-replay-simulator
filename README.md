@@ -6,7 +6,7 @@
 Deterministic performance benchmarking for multi-step agentic workloads on
 OpenShift. The current integration measures **OpenClaw as the agentic harness** and **OpenShell** with
 a controlled replay backend instead of live LLM inference.
-future work will allow to test any agentic harness.
+future work will allow to test any agentic harness, or testing with real inference.
 
 The benchmark replays recorded agent sessions from the public
 [`Exgentic/agent-llm-traces`](https://huggingface.co/datasets/Exgentic/agent-llm-traces)
@@ -16,20 +16,14 @@ sandbox portions of the execution.
 
 ## What It Measures
 
-```text
-Replay driver -> OpenClaw -> controlled mock LLM
-                         -> OpenShell -> agent sandbox
-```
 
-- OpenClaw harness and context assembly.
-- Model/tool loop orchestration.
+- agent harness context assembly.
+- Model or tool loop orchestration time.
 - OpenShell sandbox initialization and tool execution.
-- CPU and memory for the exact OpenClaw and sandbox containers.
+- CPU and memory for OpenClaw and OpenShell.
 - OpenTelemetry spans and per-step timing.
 
 The benchmark does **not** measure live model quality or live GPU inference.
-The mock LLM uses controlled replay timing. Do not compare its TTFT/ITL values
-directly with a production vLLM benchmark.
 
 ## Requirements
 
