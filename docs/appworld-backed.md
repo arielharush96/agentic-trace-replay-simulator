@@ -39,6 +39,8 @@ AppWorld API and returns a newly generated result.
 - Do not use production credentials or unrestricted network access.
 - Keep AppWorld outside the OpenShell sandbox when measuring sandbox overhead.
 - Record the AppWorld package/data version and task mapping.
+- Export the adapter's `appworld_tool` events into the per-trace result directory;
+  sandbox stdout alone is not evidence that an AppWorld API call succeeded.
 - Compare generated results with recorded trace results before claiming exact
   reproduction.
 - A trace without its matching AppWorld task/state cannot be reproduced exactly.

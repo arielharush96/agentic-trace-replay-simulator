@@ -98,6 +98,14 @@ reproduction command.
 
 ## OpenShift Run
 
+## Live Trace Recording
+
+The repository also includes a transport-neutral live event recorder for an
+OpenClaw plugin, gateway middleware, or sidecar. It writes redacted,
+timestamped `agent-event/v1` JSONL records for user requests, context assembly,
+model calls, tool calls/results, sandbox execution, and session completion. See
+[`docs/recording.md`](docs/recording.md).
+
 Copy the example configuration and fill in cluster-specific values:
 
 ```bash

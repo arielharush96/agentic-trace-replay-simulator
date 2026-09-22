@@ -10,8 +10,8 @@ mkdir -p "$APPWORLD_ROOT"
 python3 -m venv "$VENV"
 "$VENV/bin/python" -m pip install --upgrade pip
 "$VENV/bin/python" -m pip install appworld
-APPWORLD_ROOT="$APPWORLD_ROOT" "$VENV/bin/appworld" install
-APPWORLD_ROOT="$APPWORLD_ROOT" "$VENV/bin/appworld" download data
+APPWORLD_ROOT="$APPWORLD_ROOT" "$VENV/bin/appworld" install --root "$APPWORLD_ROOT"
+APPWORLD_ROOT="$APPWORLD_ROOT" "$VENV/bin/appworld" download --root "$APPWORLD_ROOT" data
 
 echo "AppWorld initialized at $APPWORLD_ROOT"
 echo "Use $VENV/bin/python and APPWORLD_ROOT when starting the adapter."

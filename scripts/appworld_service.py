@@ -7,7 +7,8 @@ import argparse
 import json
 import os
 import threading
-from http.server import BaseHTTPRequestHandler, ThreadingHTTPServer
+import time
+from http.server import BaseHTTPRequestHandler, HTTPServer
 from pathlib import Path
 
 
@@ -19,7 +20,46 @@ class AppWorldAdapter:
         self.AppWorld = AppWorld
         self.mapping = json.loads(Path(mapping_path).read_text(encoding="utf-8"))
         self.worlds = {}
+        self.tokens = {}
         self.lock = threading.Lock()
+
+    @staticmethod
+    def _clock_ns() -> int:
+        return time.clock_gettime_ns(getattr(time, "CLOCK_MONOTONIC_RAW", time.CLOCK_MONOTONIC))
+
+    def _world(self, session_id: str, task_id: str):
+        world = self.worlds.get(session_id)
+        if world is None:
+            world = self.AppWorld(task_id=task_id, experiment_name="trace-replay")
+            self.worlds[session_id] = world
+        return world
+
+    def _account_password(self, world, app_name: str) -> str | None:
+        output = world.execute("response = apis.supervisor.show_account_passwords()\nprint(json.dumps(response))")
+        for line in reversed((output or "").splitlines()):
+            try:
+                accounts = json.loads(line)
+            except json.JSONDecodeError:
+                continue
+            if isinstance(accounts, list):
+                for account in accounts:
+                    if account.get("account_name") == app_name:
+                        return str(account.get("password") or "")
+        return None
+
+    def _translate_arguments(self, session_id: str, world, app_name: str, api_name: str, arguments: dict) -> dict:
+        translated = json.loads(json.dumps(arguments))
+        if api_name == "login":
+            translated["username"] = world.task.supervisor.get("email")
+            password = self._account_password(world, app_name)
+            if password:
+                translated["password"] = password
+        token = self.tokens.get(session_id, {}).get(app_name)
+        if token:
+            for key in ("access_token", "token"):
+                if key in translated:
+                    translated[key] = token
+        return translated
 
     def execute(self, request: dict) -> dict:
         session_id = str(request.get("session_id") or "")
@@ -34,17 +74,37 @@ class AppWorldAdapter:
         if len(parts) != 2:
             return {"ok": False, "error": f"cannot map AppWorld tool: {name}"}
         app_name, api_name = parts
-        if app_name == "supervisor" and api_name == "complete_task":
+        if name == "mcp__environment__finish":
+            expression = "response = apis.supervisor.complete_task(**arguments)"
+        elif app_name == "supervisor" and api_name == "complete_task":
             expression = "response = apis.supervisor.complete_task(**arguments)"
         else:
             expression = f"response = apis.{app_name}.{api_name}(**arguments)"
+        # AppWorld freezes Python clocks; use the kernel raw monotonic clock.
+        started_ns = self._clock_ns()
         with self.lock:
-            world = self.worlds.get(session_id)
-            if world is None:
-                world = self.AppWorld(task_id=task_id, experiment_name="trace-replay")
-                self.worlds[session_id] = world
-        code = "import json\n" + expression + "\nprint(json.dumps(response, default=str))"
-        output = world.execute(code.replace("**arguments", f"**{json.dumps(dict(request.get('arguments') or {}))}"))
+            world = self._world(session_id, task_id)
+            arguments = self._translate_arguments(session_id, world, app_name, api_name, dict(request.get("arguments") or {}))
+            code = "import json\n" + expression + "\nprint(json.dumps(response, default=str))"
+            output = world.execute(code.replace("**arguments", f"**{json.dumps(arguments)}"))
+            if api_name == "login":
+                for line in reversed((output or "").splitlines()):
+                    try:
+                        result = json.loads(line)
+                    except json.JSONDecodeError:
+                        continue
+                    if isinstance(result, dict) and result.get("access_token"):
+                        self.tokens.setdefault(session_id, {})[app_name] = result["access_token"]
+                        break
+        elapsed_ms = (self._clock_ns() - started_ns) / 1e6
+        print(json.dumps({
+            "event": "appworld_tool",
+            "session_id": session_id,
+            "task_id": task_id,
+            "tool": name,
+            "elapsed_ms": round(elapsed_ms, 3),
+            "result_bytes": len((output or "").encode("utf-8")),
+        }), flush=True)
         return {"ok": True, "session_id": session_id, "task_id": task_id, "tool": name, "result": output}
 
 
@@ -80,7 +140,10 @@ def main() -> int:
             print(format % args, flush=True)
 
     print(f"AppWorld adapter listening on {args.host}:{args.port}", flush=True)
-    ThreadingHTTPServer((args.host, args.port), Handler).serve_forever()
+    # AppWorld installs process-level signal handlers during execution, so its
+    # stateful world must run on the main thread. Serialization also preserves
+    # deterministic state transitions within a session.
+    HTTPServer((args.host, args.port), Handler).serve_forever()
     return 0
 
 

@@ -22,7 +22,7 @@ from pathlib import Path
 from typing import Any
 
 
-DEFAULT_THANOS = ""
+DEFAULT_THANOS = "thanos.example.invalid"
 
 
 def oc_token() -> str:
@@ -156,7 +156,7 @@ def collect(
     thanos_host: str | None = None,
     openclaw_pod: str | None = None,
     openclaw_url: str | None = None,
-    openclaw_api_key: str = "",
+    openclaw_api_key: str = "REDACTED_TOKEN",
 ) -> dict[str, Any]:
     token = oc_token()
     if not token:
