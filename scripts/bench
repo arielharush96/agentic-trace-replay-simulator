@@ -12,6 +12,57 @@ if ((BASH_VERSINFO[0] < 4)); then
     exit 1
 fi
 
+# ── Run UI ───────────────────────────────────────────────────────────────────
+# Every run prints its configuration in a box, then streams the controller's
+# phase events live. The box is fixed-width so it stays legible in an 80-column
+# terminal; long values are truncated with an ellipsis.
+BOX_TEXT_WIDTH=72
+BOX_LABEL_WIDTH=22
+
+box_rule() {
+    printf '%s' "$1"
+    printf "$2%.0s" $(seq 1 $((BOX_TEXT_WIDTH + 2)))
+    printf '%s\n' "$3"
+}
+
+box_top() { box_rule "╔" "═" "╗"; }
+box_mid() { box_rule "╠" "═" "╣"; }
+box_bot() { box_rule "╚" "═" "╝"; }
+
+box_line() {
+    local text="${1-}"
+    if (( ${#text} > BOX_TEXT_WIDTH )); then
+        text="${text:0:$((BOX_TEXT_WIDTH - 3))}..."
+    fi
+    printf '║ %-*s ║\n' "$BOX_TEXT_WIDTH" "$text"
+}
+
+box_center() {
+    local text="${1-}"
+    local pad=$(( (BOX_TEXT_WIDTH - ${#text}) / 2 ))
+    (( pad < 0 )) && pad=0
+    local trail=$(( BOX_TEXT_WIDTH - pad - ${#text} ))
+    (( trail < 0 )) && trail=0
+    printf '║ %*s%s%*s ║\n' "$pad" "" "$text" "$trail" ""
+}
+
+box_field() {
+    box_line "$(printf '%-*s %s' "$BOX_LABEL_WIDTH" "$1" "${2-}")"
+}
+
+box_detail() {
+    box_line "$(printf '  %-*s %s' "$BOX_LABEL_WIDTH" "$1" "${2-}")"
+}
+
+section_rule() {
+    printf '  %s\n' "$(printf '─%.0s' $(seq 1 68))"
+}
+
+elapsed_hms() {
+    local seconds="$1"
+    printf '%02d:%02d:%02d' $((seconds / 3600)) $((seconds % 3600 / 60)) $((seconds % 60))
+}
+
 # Defaults
 AGENTS=""
 WORKLOAD_DIST="even"
@@ -56,6 +107,8 @@ while [[ $# -gt 0 ]]; do
         --retries)           RETRIES="$2"; shift 2 ;;
         --simulated-ttft)    SIMULATED_TTFT="$2"; shift 2 ;;
         --simulated-itl)     SIMULATED_ITL="$2"; shift 2 ;;
+        --ttft-simulated)    SIMULATED_TTFT="$2"; shift 2 ;;
+        --itl-simulated)     SIMULATED_ITL="$2"; shift 2 ;;
         --warm-pool)         WARM_POOL="$2"; shift 2 ;;
         --cold-ratio)        COLD_RATIO="$2"; shift 2 ;;
         --out|-o)            OUT_DIR="$2"; shift 2 ;;
@@ -105,8 +158,10 @@ EXECUTION
   --retries N               Retry count for failed traces (default: 2)
   --simulated-ttft MS       Simulated time-to-first-token in ms
                              (overrides recorded timing; e.g. 50 = 50ms TTFT)
+  --ttft-simulated MS       Alias for --simulated-ttft
   --simulated-itl MS        Simulated inter-token latency in ms
                              (e.g. 10 = 10ms between tokens)
+  --itl-simulated MS        Alias for --simulated-itl
   --warm-pool N             Warm sandbox pool size (default: same as --agents)
   --cold-ratio RATIO        Fraction of agents using cold-start fallback
                              (e.g. 0.2 = 20% cold, 80% warm) - for
@@ -143,6 +198,9 @@ EXAMPLES
 
   # TTFT-only stress (long first-token wait, instant decode)
   bench --agents 4 --simulated-ttft 500 --simulated-itl 0.1
+
+  # Same run with the timing aliases; the configuration box is identical
+  bench --agents 4 --ttft-simulated 50 --itl-simulated 15
 
   # 10 agents with 20% cold-start fallback
   bench --agents 10 --cold-ratio 0.2
@@ -258,7 +316,7 @@ case "$WORKLOAD_DIST" in
         done
         # Fill unspecified workloads with 0
         for k in swe pa research cs; do
-            [[ -z "${WL_COUNT[$key]:-}" ]] && WL_COUNT[$k]=0
+            [[ -z "${WL_COUNT[$k]:-}" ]] && WL_COUNT[$k]=0
         done
         if $IS_PERCENT; then
             # Convert percentages to agent counts
@@ -313,7 +371,6 @@ if [[ -z "$WARM_POOL" ]]; then
     WARM_POOL=$AGENTS
 fi
 if [[ -n "$COLD_RATIO" ]]; then
-    WARM_POOL=$((AGENTS - AGENTS * COLD_RATIO * 10 / 10))
     WARM_POOL=$(python3 -c "print(int($AGENTS * (1 - $COLD_RATIO)))")
 fi
 
@@ -325,35 +382,62 @@ if [[ -z "$OUT_DIR" ]]; then
     OUT_DIR="results/bench-$(date -u +%Y%m%dT%H%M%S)"
 fi
 
-# Print configuration
+# Print the run configuration
+WORKLOAD_COUNT=0
+for k in swe pa research cs; do
+    if (( ${WL_COUNT[$k]:-0} > 0 )); then
+        WORKLOAD_COUNT=$((WORKLOAD_COUNT + 1))
+    fi
+done
+
 echo ""
-echo "Trace Replay Benchmark"
-echo "  agents:             $AGENTS"
-echo "  traces:             $TOTAL_TRACES"
-echo "  workloads:"
-echo "    SWE (swebench):        ${WL_COUNT[swe]}"
-echo "    PA (appworld):         ${WL_COUNT[pa]}"
-echo "    Research (browsecomp): ${WL_COUNT[research]}"
-echo "    CS (tau2):             ${WL_COUNT[cs]}"
-echo "  concurrent workers: $AGENTS"
-echo "  warm pool:          $WARM_POOL"
+box_top
+box_center "Agentic AI Performance Benchmark — Live Run"
+box_mid
+box_field "Agents" "$AGENTS"
+box_field "Traces" "$TOTAL_TRACES"
+box_field "Workloads" "$WORKLOAD_COUNT of 4"
+box_detail "SWE (swebench)" "${WL_COUNT[swe]:-0}"
+box_detail "PA (AppWorld)" "${WL_COUNT[pa]:-0}"
+box_detail "Research (BrowseComp+)" "${WL_COUNT[research]:-0}"
+box_detail "CS (Tau2)" "${WL_COUNT[cs]:-0}"
+box_field "Concurrent workers" "$AGENTS"
+if (( WARM_POOL == 1 )); then
+    box_field "Warm pool" "1 sandbox"
+else
+    box_field "Warm pool" "$WARM_POOL sandboxes"
+fi
 if [[ -n "$COLD_RATIO" ]]; then
     COLD=$((AGENTS - WARM_POOL))
-    echo "  cold start:         $COLD"
+    if (( COLD == 1 )); then
+        box_field "Cold start" "1 agent (ratio $COLD_RATIO)"
+    else
+        box_field "Cold start" "$COLD agents (ratio $COLD_RATIO)"
+    fi
 fi
-echo "  dispatch:           ${DISPATCH_INTERVAL}s"
-echo "  retries:            $RETRIES"
+box_field "Dispatch" "${DISPATCH_INTERVAL}s between admissions"
+box_field "Retries" "$RETRIES per trace"
 if [[ -n "$SIMULATED_TTFT" || -n "$SIMULATED_ITL" ]]; then
-    echo "  simulated timing:   ttft=${SIMULATED_TTFT:-default}ms itl=${SIMULATED_ITL:-default}ms"
+    box_field "Model timing" "ttft=${SIMULATED_TTFT:-recorded}ms itl=${SIMULATED_ITL:-recorded}ms (simulated)"
+else
+    box_field "Model timing" "recorded trace timing"
 fi
-echo "  mode:               client-boundary replay (one request per recorded user message)"
-echo "  model:              mock LLM sidecar (deterministic)"
-echo "  output:             $OUT_DIR"
+box_field "Replay mode" "client-boundary (one request per user message)"
+box_field "LLM" "mock sidecar (deterministic)"
+box_field "Corpus" "$CORPUS"
+if [[ -n "$NODES" ]]; then
+    box_field "Nodes" "$NODES"
+fi
+if $QUICK; then
+    box_field "Quick mode" "skip deployment re-verification"
+fi
+box_field "Output" "$OUT_DIR"
+box_bot
 echo ""
 
 # Print trace-to-agent assignment
-echo "  Trace Assignment:"
-echo "  ------------------------------------------------------------"
+echo "  Trace assignment"
+section_rule
 python3 -c "
 import json
 c = json.load(open('$CORPUS'))
@@ -374,13 +458,8 @@ echo ""
 
 # Dry run
 if $DRY_RUN; then
-    echo "  [dry-run] Would run these sessions:"
     echo ""
-    IFS=',' read -ra IDS <<< "$SESSION_IDS"
-    for sid in "${IDS[@]}"; do
-        echo "    $sid"
-    done
-    echo ""
+    echo "  [dry-run] No cluster changes were made."
     echo "  [dry-run] Workload plan: $WORKLOAD_PLAN"
     echo ""
     exit 0
@@ -399,8 +478,17 @@ if $QUICK; then
     EXTRA="--skip-resume-agent-reconcile"
 fi
 
+WORKSPACE_ARGS=()
+if [[ -n "$PVCS" ]]; then
+    WORKSPACE_ARGS+=(--workspace-access-mode ReadWriteOnce --workspace-pvcs "$PVCS")
+    [[ -n "$STORAGE_CLASS" ]] && WORKSPACE_ARGS+=(--workspace-storage-class "$STORAGE_CLASS")
+elif [[ -n "$STORAGE_CLASS" ]]; then
+    WORKSPACE_ARGS+=(--workspace-access-mode ReadWriteOnce --workspace-storage-class "$STORAGE_CLASS")
+fi
+
 # Run
-echo "  ▶ Starting at $(date '+%H:%M:%S')"
+START_EPOCH=$(date +%s)
+echo "  ▶ Starting at $(date '+%H:%M:%S') — streaming phases below"
 echo ""
 
 mkdir -p "$OUT_DIR"
@@ -416,8 +504,7 @@ python3 scripts/run_experiment.py \
     --workload-plan "$WORKLOAD_PLAN" \
     --backend-manifest config/backend-manifest.example.json \
     --nodes "$NODES" \
-    ${STORAGE_CLASS:+--workspace-access-mode ReadWriteOnce --workspace-storage-class "$STORAGE_CLASS"} \
-    ${PVCS:+--workspace-pvcs "$PVCS"} \
+    ${WORKSPACE_ARGS[@]+"${WORKSPACE_ARGS[@]}"} \
     --openshell-namespace "$OPENSHELL_NAMESPACE" \
     ${GATEWAY_ENDPOINT:+--openshell-gateway-endpoint "$GATEWAY_ENDPOINT"} \
     --agents "$AGENTS" \
@@ -427,34 +514,60 @@ python3 scripts/run_experiment.py \
     ${SIMULATED_TTFT:+--simulated-ttft "$SIMULATED_TTFT"} \
     ${SIMULATED_ITL:+--simulated-itl "$SIMULATED_ITL"} \
     $EXTRA \
-    2>&1 | tee "$OUT_DIR/controller.log" | grep -E '^\[|complete:|failed|sandbox pool:|trace [0-9]|deployment slot|quality' | grep -v 'corpus: mapped\|mock corpus\|workspace storage map\|workspace prefix\|storage: reusing\|temporary experiment\|deployment: preparing\|deployment: owned mock'
+    2>&1 | tee "$OUT_DIR/controller.log" \
+         | grep --line-buffered -E '^\[|^preflight:|trace (complete|failed):|sandbox pool:|quality gate|Benchmark (complete|failed)' \
+         | grep --line-buffered -vE 'workspace storage map=|corpus: mapped'
 controller_status=${PIPESTATUS[0]}
 set -e
 
+ELAPSED=$(( $(date +%s) - START_EPOCH ))
+ELAPSED_HMS=$(elapsed_hms "$ELAPSED")
+
 if (( controller_status != 0 )); then
     echo ""
-    echo "Benchmark failed: controller exited with status $controller_status" >&2
-    echo "  log: $OUT_DIR/controller.log" >&2
+    box_top
+    box_center "Run Failed"
+    box_mid
+    box_field "Controller status" "$controller_status"
+    box_field "Results" "$OUT_DIR"
+    box_field "Log" "$OUT_DIR/controller.log"
+    box_field "Elapsed" "$ELAPSED_HMS"
+    box_bot
+    echo ""
     exit "$controller_status"
 fi
 
 # Summary
 echo ""
-echo "Benchmark complete"
+box_top
+box_center "Run Complete"
+box_mid
 
-if [ -f "$OUT_DIR/analysis/quality_gate.json" ]; then
-    python3 -c "
+if [[ -f "$OUT_DIR/analysis/quality_gate.json" ]]; then
+    QG_LINES=$(python3 -c "
 import json
 q = json.load(open('$OUT_DIR/analysis/quality_gate.json'))
-print(f\"  quality gate:  {q.get('status', '?')}\")
-print(f\"  failures:      {q.get('failure_count', '?')}\")
-wp = q.get('workload_population', {})
-for w, p in sorted(wp.items()):
-    print(f\"  {w:28s} {p['total']} sess ({p['tool_rich']} tool, {p['conversational']} conv)\")
-"
+print('status\t' + str(q.get('status', '?')))
+print('failures\t' + str(q.get('failure_count', '?')))
+print('header\tWorkload population\t')
+for w, p in sorted(q.get('workload_population', {}).items()):
+    print('population\t' + w + '\t' + str(p.get('total', '?')) + ' sess (' + str(p.get('tool_rich', '?')) + ' tool, ' + str(p.get('conversational', '?')) + ' conv)')
+" 2>/dev/null) || QG_LINES=$'status\tnot available'
+    while IFS=$'\t' read -r kind first second; do
+        case "$kind" in
+            status)     box_field "Quality gate" "$first" ;;
+            failures)   box_field "Failures" "$first" ;;
+            header)     box_field "$first" "" ;;
+            population) box_detail "$first" "$second" ;;
+        esac
+    done <<< "$QG_LINES"
+else
+    box_field "Quality gate" "not available"
 fi
 
-echo "  results:       $OUT_DIR"
-echo ""
-echo "  Finished at $(date '+%H:%M:%S')"
+box_field "Results" "$OUT_DIR"
+box_field "Log" "$OUT_DIR/controller.log"
+box_field "Finished" "$(date '+%H:%M:%S')"
+box_field "Elapsed" "$ELAPSED_HMS"
+box_bot
 echo ""
