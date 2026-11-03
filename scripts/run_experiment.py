@@ -1749,8 +1749,8 @@ def ensure_appworld_data(
     }
     cluster.apply_json_in(namespace, stage)
     try:
-        # ibmc-vpc-block-* uses WaitForFirstConsumer. The pod must exist before
-        # the PVC can bind, and its node selector pins both to the experiment node.
+        # Block StorageClasses that use WaitForFirstConsumer bind only once a
+        # consumer exists; the node selector pins the pod and volume to one node.
         deadline = time.time() + 600
         while time.time() < deadline:
             phase = str(cluster.json(["-n", namespace, "get", "pvc", pvc_name]).get("status", {}).get("phase") or "")
