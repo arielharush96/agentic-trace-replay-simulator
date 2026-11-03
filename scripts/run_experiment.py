@@ -4815,7 +4815,11 @@ def main() -> int:
         }
     runtime_corpus.write_text(json.dumps(runtime_payload, indent=2), encoding="utf-8")
     (args.out / "backend_plan.json").write_text(json.dumps(plan_payload(backends, allocation), indent=2) + "\n", encoding="utf-8")
-    log_phase(f"queue: {len(queue)} traces ({args.traces_per_workload} per workload), {args.agents} agents")
+    log_phase(
+        f"queue: {len(queue)} traces "
+        f"({', '.join(f'{workload}={count}' for workload, count in allocation.items())}), "
+        f"{args.agents} agents"
+    )
 
     def write_deployment_plan(agent_nodes: list[str]) -> dict[str, list[int]]:
         node_groups: dict[str, list[int]] = {node: [] for node in target_nodes}
