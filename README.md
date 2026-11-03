@@ -118,10 +118,11 @@ values explicitly:
 | Kueue webhook | `TRACE_REPLAY_KUEUE_NAMESPACE`, `TRACE_REPLAY_KUEUE_WEBHOOK_SERVICE` | only if non-default | Defaults to `kueue-system/kueue-webhook-service`. |
 | Workspace storage class | `STORAGE_CLASS` (bench) or `TRACE_REPLAY_WORKSPACE_STORAGE_CLASS` / `--workspace-storage-class` | no | Empty uses the cluster default. |
 | Workspace PVCs | `PVCS=node-a=pvc-a,node-b=pvc-b` (bench) / `--workspace-pvcs` | no | Existing RWO claims, one per node; otherwise the controller creates run-owned workspace PVCs. |
-| AppWorld data PVC | `TRACE_REPLAY_APPWORLD_DATA_PVC` / `--appworld-data-pvc` | for `pa` workload | RWO claim in the AppWorld backend namespace. |
-| AppWorld data source | `TRACE_REPLAY_APPWORLD_DATA` / `--appworld-data` | for `pa` staging | Directory containing `base_dbs/` and `tasks/`. |
-| AppWorld task map | `TRACE_REPLAY_APPWORLD_TASK_MAP` / `--appworld-task-map` | for `pa` | The repository ships `config/appworld-session-task-map-full.json`; pass it explicitly if the default path is not populated. |
-| Reuse AppWorld data | `TRACE_REPLAY_SKIP_APPWORLD_STAGING=1` / `--skip-appworld-staging` | for a pre-populated PVC | Verifies `/appworld/data/base_dbs/spotify.db` and `/appworld/data/tasks`; does not require the controller ownership label. |
+| AppWorld data PVC | `TRACE_REPLAY_APPWORLD_DATA_PVC` / `--appworld-data-pvc` | for `pa` workload | Bound RWO claim in the AppWorld backend namespace (`trace-replay` by default), schedulable on the selected control node. |
+| AppWorld data source | `TRACE_REPLAY_APPWORLD_DATA` / `--appworld-data` | for `pa` staging | Directory containing `base_dbs/` and `tasks/`; staged into `/appworld/data/`. |
+| AppWorld backend image | `k8s/appworld-backend.yaml` | for `pa` | Defaults to `ghcr.io/stonybrooknlp/appworld:latest`; mirror it if your registry cannot pull it. |
+| AppWorld task map | `TRACE_REPLAY_APPWORLD_TASK_MAP` / `--appworld-task-map` | for `pa` | Must contain an entry for every selected PA session ID. The shipped full map covers 25 sessions; rebuild it for a custom corpus. |
+| Reuse AppWorld data | `TRACE_REPLAY_SKIP_APPWORLD_STAGING=1` / `--skip-appworld-staging` | for a pre-populated PVC | Skips staging and checks `/appworld/data/base_dbs/spotify.db` and `/appworld/data/tasks`; the PVC must already contain the complete data and does not need the controller ownership label. |
 | Thanos | `THANOS_HOST`; optional `PROM_TOKEN` | no | CPU/memory collection only. If unset or unreachable, the manifest records a warning and traces still complete. |
 
 By default the controller creates or reuses an **owned** AppWorld PVC and stages
@@ -130,6 +131,21 @@ data from `--appworld-data`. An existing PVC without the
 customer-owned volume cannot be overwritten by accident. Use
 `--skip-appworld-staging` (or `TRACE_REPLAY_SKIP_APPWORLD_STAGING=1`) to reuse a
 pre-populated claim instead.
+
+Before using a pre-populated PVC, confirm:
+
+- the claim is `Bound`, uses `ReadWriteOnce`, lives in the AppWorld backend
+  namespace (`trace-replay` by default), and is schedulable on the selected
+  control node;
+- it contains complete AppWorld data under `/appworld/data/base_dbs/` and
+  `/appworld/data/tasks/`;
+- every task ID in the task map exists in that data;
+- the AppWorld backend image is pullable by the cluster.
+
+The preflight check is intentionally shallow: it verifies the claim, the
+`/appworld/data/base_dbs/spotify.db` marker, and the `tasks/` directory, but not
+every app database or task mapping. A missing database or a task-map/data
+mismatch can pass preflight and fail when that specific PA tool call executes.
 
 ## Replay corpus
 
