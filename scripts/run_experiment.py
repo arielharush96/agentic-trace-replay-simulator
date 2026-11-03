@@ -48,6 +48,11 @@ BASE_JAEGER = "trace-replay-jaeger"
 BASE_MOCK_LLM = "trace-replay-mock-llm"
 BASE_OPENCLAW = "trace-replay-openclaw-shell"
 BASE_OPENCLAW_CONFIG = "trace-replay-openclaw-shell-config"
+APPWORLD_IMAGE = "ghcr.io/stonybrooknlp/appworld:latest"
+APPWORLD_DATA_CHECK = (
+    "test -f /appworld/data/base_dbs/spotify.db "
+    "&& test -d /appworld/data/tasks && printf PRESENT"
+)
 # The plain public image does not carry the OpenSSH client that the published
 # OpenShell plugin uses to reach a sandbox.  Use the benchmark's pinned
 # OpenShell-enabled image for experiment-owned gateways; callers may override
@@ -58,6 +63,8 @@ EXPERIMENT_OPENCLAW_IMAGE = os.environ.get(
 )
 
 from trace_replay_sim.collect import collect as collect_prometheus
+from trace_replay_sim.collect import skipped_report as skipped_prometheus_report
+from trace_replay_sim.collect import write_report as write_prometheus_report
 from trace_replay_sim.functional_conformance import verify_trace, write_report
 from trace_replay_sim.jaeger_export import compute_timing_segments, extract_per_turn, export as export_jaeger
 from trace_replay_sim.per_turn_analysis import analyze as analyze_per_turn
@@ -1690,6 +1697,125 @@ def _wait_for_phase(cluster: Cluster, namespace: str, kind: str, name: str, expe
     raise RuntimeError(f"timed out waiting for {kind}/{name} phase={expected}")
 
 
+def _appworld_data_pod(name: str, pvc_name: str, node: str, command: str) -> dict[str, Any]:
+    """Build a short-lived pod that mounts the AppWorld data volume."""
+    return {
+        "apiVersion": "v1",
+        "kind": "Pod",
+        "metadata": {
+            "name": name,
+            "labels": {"managed-by": "trace-replay-experiment", "component": "appworld-data-probe"},
+        },
+        "spec": {
+            "restartPolicy": "Never",
+            "securityContext": {"fsGroupChangePolicy": "OnRootMismatch"},
+            "nodeSelector": {"kubernetes.io/hostname": node},
+            "containers": [{
+                "name": "appworld-data",
+                "image": APPWORLD_IMAGE,
+                "command": ["/bin/sh", "-lc", command],
+                "volumeMounts": [{"name": "appworld-data", "mountPath": "/appworld"}],
+            }],
+            "volumes": [{"name": "appworld-data", "persistentVolumeClaim": {"claimName": pvc_name}}],
+        },
+    }
+
+
+def _wait_for_pvc_bound(cluster: Cluster, namespace: str, pvc_name: str, timeout: int = 600) -> None:
+    """Wait for a PVC to bind, including WaitForFirstConsumer storage classes."""
+    deadline = time.time() + timeout
+    while time.time() < deadline:
+        phase = str(cluster.json(["-n", namespace, "get", "pvc", pvc_name]).get("status", {}).get("phase") or "")
+        if phase == "Bound":
+            return
+        if phase == "Lost":
+            raise RuntimeError(f"AppWorld PVC {namespace}/{pvc_name} entered Lost state")
+        time.sleep(5)
+    raise RuntimeError(f"timed out waiting for AppWorld PVC {namespace}/{pvc_name} to bind")
+
+
+def _appworld_data_present(cluster: Cluster, namespace: str, pod: str) -> bool:
+    result = cluster.run(
+        ["-n", namespace, "exec", pod, "--", "sh", "-lc", APPWORLD_DATA_CHECK],
+        check=False,
+    ).strip()
+    return "PRESENT" in result
+
+
+def _appworld_backend_pod(cluster: Cluster, namespace: str) -> str:
+    return cluster.run(
+        [
+            "-n", namespace, "get", "pod",
+            "-l", "app=trace-replay-appworld-backend",
+            "-o", "jsonpath={.items[0].metadata.name}",
+        ],
+        check=False,
+    ).strip()
+
+
+def _appworld_backend_pvc(cluster: Cluster, namespace: str, pod: str) -> str:
+    spec = cluster.json(["-n", namespace, "get", "pod", pod]).get("spec", {})
+    for volume in spec.get("volumes") or []:
+        if volume.get("name") == "appworld-data":
+            return str((volume.get("persistentVolumeClaim") or {}).get("claimName") or "")
+    return ""
+
+
+def verify_appworld_data(cluster: Cluster, namespace: str, node: str, pvc_name: str) -> None:
+    """Verify a customer-owned, pre-populated AppWorld PVC without staging.
+
+    This mode deliberately does not require the controller ownership label: the
+    PVC belongs to the customer.  It only reads the volume, checks that the
+    expected AppWorld directories exist, and never writes to it.
+    """
+    if not cluster.run(["-n", namespace, "get", "pvc", pvc_name], check=False).strip():
+        raise RuntimeError(
+            f"AppWorld data PVC {namespace}/{pvc_name} is missing; "
+            "create it or point --appworld-data-pvc at an existing claim"
+        )
+    # If the backend from an earlier run still holds this RWO claim, reading
+    # through that pod is the only safe check: a second pod cannot mount the
+    # same claim concurrently.  This also makes reruns idempotent.
+    backend_pod = _appworld_backend_pod(cluster, namespace)
+    backend_uses_pvc = bool(backend_pod) and _appworld_backend_pvc(cluster, namespace, backend_pod) == pvc_name
+    if backend_pod and backend_uses_pvc:
+        _wait_for_phase(cluster, namespace, "pod", backend_pod, "Running", timeout=600)
+        if not _appworld_data_present(cluster, namespace, backend_pod):
+            raise RuntimeError(
+                f"AppWorld data PVC {namespace}/{pvc_name} is not pre-populated; "
+                "expected /appworld/data/base_dbs/spotify.db and /appworld/data/tasks"
+            )
+        log_phase(f"appworld: verified pre-populated data PVC {namespace}/{pvc_name} via {backend_pod}")
+        return
+    probe_name = "trace-replay-appworld-data-check"
+    if cluster.run(["-n", namespace, "get", "pod", probe_name], check=False).strip():
+        cluster.delete_owned(namespace, "pod", probe_name)
+    cluster.apply_json_in(namespace, _appworld_data_pod(probe_name, pvc_name, node, "sleep 900"))
+    try:
+        # A WaitForFirstConsumer claim binds only once the probe pod exists.
+        _wait_for_pvc_bound(cluster, namespace, pvc_name)
+        _wait_for_phase(cluster, namespace, "pod", probe_name, "Running", timeout=600)
+        if not _appworld_data_present(cluster, namespace, probe_name):
+            raise RuntimeError(
+                f"AppWorld data PVC {namespace}/{pvc_name} is not pre-populated; "
+                "expected /appworld/data/base_dbs/spotify.db and /appworld/data/tasks"
+            )
+    finally:
+        cluster.delete_owned(namespace, "pod", probe_name)
+    log_phase(f"appworld: verified pre-populated data PVC {namespace}/{pvc_name}")
+
+
+def rewrite_appworld_claim_name(manifest_text: str, pvc_name: str) -> str:
+    """Point the AppWorld backend manifest at the configured PVC name."""
+    if not re.fullmatch(r"[a-z0-9]([-a-z0-9.]*[a-z0-9])?", pvc_name or ""):
+        raise RuntimeError(f"invalid AppWorld PVC name: {pvc_name!r}")
+    return re.sub(
+        r"(claimName:\s*)[^\s#]+",
+        lambda match: f"{match.group(1)}{pvc_name}",
+        manifest_text,
+    )
+
+
 def ensure_appworld_data(
     cluster: Cluster,
     namespace: str,
@@ -1735,41 +1861,12 @@ def ensure_appworld_data(
     else:
         cluster.apply_json_in(namespace, pvc)
     stage_name = "trace-replay-appworld-data-stage"
-    stage = {
-        "apiVersion": "v1",
-        "kind": "Pod",
-        "metadata": {
-            "name": stage_name,
-            "namespace": namespace,
-            "labels": {"managed-by": "trace-replay-experiment", "component": "appworld-data-stage"},
-        },
-        "spec": {
-            "restartPolicy": "Never",
-            "securityContext": {"fsGroupChangePolicy": "OnRootMismatch"},
-            "nodeSelector": {"kubernetes.io/hostname": node},
-            "containers": [{
-                "name": "stage",
-                "image": "ghcr.io/stonybrooknlp/appworld:latest",
-                "command": ["/bin/sh", "-lc", "mkdir -p /appworld/data && sleep 900"],
-                "volumeMounts": [{"name": "appworld-data", "mountPath": "/appworld"}],
-            }],
-            "volumes": [{"name": "appworld-data", "persistentVolumeClaim": {"claimName": pvc_name}}],
-        },
-    }
+    stage = _appworld_data_pod(stage_name, pvc_name, node, "mkdir -p /appworld/data && sleep 900")
     cluster.apply_json_in(namespace, stage)
     try:
         # Block StorageClasses that use WaitForFirstConsumer bind only once a
         # consumer exists; the node selector pins the pod and volume to one node.
-        deadline = time.time() + 600
-        while time.time() < deadline:
-            phase = str(cluster.json(["-n", namespace, "get", "pvc", pvc_name]).get("status", {}).get("phase") or "")
-            if phase == "Bound":
-                break
-            if phase == "Lost":
-                raise RuntimeError(f"AppWorld PVC {namespace}/{pvc_name} entered Lost state")
-            time.sleep(5)
-        else:
-            raise RuntimeError(f"timed out waiting for AppWorld PVC {namespace}/{pvc_name} to bind")
+        _wait_for_pvc_bound(cluster, namespace, pvc_name)
         _wait_for_phase(cluster, namespace, "pod", stage_name, "Running", timeout=600)
         present = cluster.run(
             ["-n", namespace, "exec", stage_name, "--", "sh", "-lc", "test -f /appworld/data/base_dbs/spotify.db && printf PRESENT"],
@@ -1792,6 +1889,7 @@ def ensure_workload_backends(
     run_id: str,
     *,
     appworld_task_map: Path | None = None,
+    appworld_data_pvc: str | None = None,
 ) -> dict[str, Any]:
     """Deploy/check only explicitly configured, experiment-owned backends.
 
@@ -1854,6 +1952,11 @@ def ensure_workload_backends(
                 "data": source_data,
             })
             manifest_text = manifest_path.read_text(encoding="utf-8")
+            if spec.benchmark == "appworld" and appworld_data_pvc:
+                # The checked-in template points at the default claim.  Keep it
+                # usable as-is, but bind a customer-owned PVC when one is
+                # supplied.
+                manifest_text = rewrite_appworld_claim_name(manifest_text, appworld_data_pvc)
             # Backend services are single, run-owned control-plane services.
             # Render their node selector from the requested control node
             # instead of silently applying the historical hard-coded node
@@ -4355,7 +4458,32 @@ def collect_trace(
         lifecycle["sandbox_reuse_ms"] = None
         lifecycle["sandbox_reuse_measurement"] = "gateway telemetry measures request-to-first-action, not lookup alone"
         lifecycle_path.write_text(json.dumps(lifecycle, indent=2) + "\n", encoding="utf-8")
-    collect_prometheus(shell / "prometheus", start=start, end=end, ns_openclaw=cluster.namespace, ns_openshell=openshell_ns, openclaw_pod=openclaw_pod)
+    try:
+        collect_prometheus(
+            shell / "prometheus",
+            start=start,
+            end=end,
+            ns_openclaw=cluster.namespace,
+            ns_openshell=openshell_ns,
+            openclaw_pod=openclaw_pod,
+        )
+    except Exception as exc:
+        # Prometheus is optional telemetry.  Never turn a collector outage into
+        # a failed trace; keep the manifest so downstream analysis and the
+        # output gate can report the gap explicitly.
+        reason = f"Prometheus collection failed; continuing without metrics: {exc}"
+        log_phase(f"telemetry: {reason}")
+        write_prometheus_report(
+            shell / "prometheus",
+            skipped_prometheus_report(
+                start=start,
+                end=end,
+                reason=reason,
+                ns_openclaw=cluster.namespace,
+                ns_openshell=openshell_ns,
+                openclaw_pod=openclaw_pod,
+            ),
+        )
     profile_v2(traces=traces / "raw_traces.json", mock_edges=shell / "mock_edges.jsonl", prom=shell / "prometheus", out=shell / "profile-v2", driver_requests=shell / "requests.jsonl", sandbox_lifecycle=shell / "sandbox_lifecycle.json")
     analyze_per_turn(traces, shell / "prometheus", trace_dir / "analysis")
     backend_dir = trace_dir / ("data/appworld" if backend.benchmark == "appworld" else "data/backend")
@@ -4465,7 +4593,20 @@ def main() -> int:
     parser.add_argument(
         "--appworld-data-pvc",
         default=os.environ.get("TRACE_REPLAY_APPWORLD_DATA_PVC", "trace-replay-appworld-data"),
-        help="owned RWO PVC used by the AppWorld backend",
+        help="RWO PVC used by the AppWorld backend",
+    )
+    parser.add_argument(
+        "--skip-appworld-staging",
+        action="store_true",
+        default=(
+            os.environ.get("TRACE_REPLAY_SKIP_APPWORLD_STAGING", "").strip().lower()
+            in {"1", "true", "yes", "on"}
+        ),
+        help=(
+            "reuse an existing, pre-populated AppWorld data PVC instead of "
+            "staging from --appworld-data; the PVC does not need the controller "
+            "ownership label"
+        ),
     )
     parser.add_argument("--workload-plan", help="exact allocation, e.g. personal_assistant=5,software_engineering_qa=5,research_deep_search=5,customer_support_ops=5")
     parser.add_argument("--backend-manifest", type=Path, help="JSON manifest describing real workload backends")
@@ -4739,20 +4880,25 @@ def main() -> int:
             and backends["personal_assistant"].benchmark == "appworld"
         )
         if appworld_selected:
-            ensure_appworld_data(
-                cluster,
-                args.system_namespace,
-                target_nodes[0],
-                args.appworld_data_pvc,
-                args.workspace_storage_class,
-                args.appworld_data,
-            )
+            appworld_namespace = backends["personal_assistant"].namespace
+            if args.skip_appworld_staging:
+                verify_appworld_data(cluster, appworld_namespace, target_nodes[0], args.appworld_data_pvc)
+            else:
+                ensure_appworld_data(
+                    cluster,
+                    appworld_namespace,
+                    target_nodes[0],
+                    args.appworld_data_pvc,
+                    args.workspace_storage_class,
+                    args.appworld_data,
+                )
         ensure_workload_backends(
             cluster,
             backends,
             allocation,
             "backends-only",
             appworld_task_map=args.appworld_task_map if appworld_selected else None,
+            appworld_data_pvc=args.appworld_data_pvc if appworld_selected else None,
         )
         log_phase("backend gate: all selected workload backends are ready; no agents or sandboxes were created")
         return 0
@@ -5036,14 +5182,18 @@ def main() -> int:
         else None
     )
     if appworld_selected and not args.resume_existing_run:
-        ensure_appworld_data(
-            cluster,
-            args.system_namespace,
-            target_nodes[0],
-            args.appworld_data_pvc,
-            args.workspace_storage_class,
-            args.appworld_data,
-        )
+        appworld_namespace = backends["personal_assistant"].namespace
+        if args.skip_appworld_staging:
+            verify_appworld_data(cluster, appworld_namespace, target_nodes[0], args.appworld_data_pvc)
+        else:
+            ensure_appworld_data(
+                cluster,
+                appworld_namespace,
+                target_nodes[0],
+                args.appworld_data_pvc,
+                args.workspace_storage_class,
+                args.appworld_data,
+            )
     if args.resume_existing_run:
         for workload in allocation:
             spec = backends[workload]
@@ -5059,6 +5209,7 @@ def main() -> int:
             allocation,
             backend_run_id,
             appworld_task_map=args.appworld_task_map if appworld_selected else None,
+            appworld_data_pvc=args.appworld_data_pvc if appworld_selected else None,
         )
         additional_pods_by_node = {target_nodes[0]: 1}  # run-scoped mock LLM
         agent_nodes = _capacity_aware_agent_assignments(

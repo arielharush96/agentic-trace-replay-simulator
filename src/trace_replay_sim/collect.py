@@ -143,6 +143,44 @@ def discover_metrics(openclaw_url: str, api_key: str) -> list[str]:
     return sorted(metrics.keys())
 
 
+def skipped_report(
+    *,
+    start: float,
+    end: float,
+    reason: str,
+    ns_openclaw: str = "trace-replay",
+    ns_openshell: str = "openshell-tracesim",
+    openclaw_pod: str | None = None,
+) -> dict[str, Any]:
+    """Build the manifest used when Prometheus telemetry is unavailable.
+
+    Telemetry is an optional input: a trace must still complete when the
+    cluster has no Thanos endpoint or the endpoint cannot be queried.  The
+    manifest keeps the normal schema and records why collection was skipped so
+    the analysis can show the gap instead of failing the run.
+    """
+    return {
+        "schema": "agentic.trace-replay.prometheus-collection.v1",
+        "host": None,
+        "start": start,
+        "end": end,
+        "metrics": [],
+        "warnings": [reason],
+        "skipped": True,
+        "skip_reason": reason,
+        "cadvisor_queries": len(cadvisor_queries(ns_openclaw, ns_openshell, openclaw_pod)),
+        "cadvisor_success": 0,
+        "app_queries": len(openclaw_app_queries()),
+        "app_success": 0,
+    }
+
+
+def write_report(out_dir: Path, report: dict[str, Any]) -> None:
+    """Write a collection manifest, creating the telemetry directory if needed."""
+    out_dir.mkdir(parents=True, exist_ok=True)
+    (out_dir / "collect_manifest.json").write_text(json.dumps(report, indent=2), encoding="utf-8")
+
+
 def collect(
     out_dir: Path,
     *,
@@ -155,12 +193,29 @@ def collect(
     openclaw_url: str | None = None,
     openclaw_api_key: str = "change-me-gateway-token",
 ) -> dict[str, Any]:
-    token = oc_token()
-    if not token:
-        print("WARNING: could not obtain oc token for Thanos", file=sys.stderr)
     host = thanos_host or os.environ.get("THANOS_HOST")
     if not host:
-        raise ValueError("no Thanos host configured; pass thanos_host or set THANOS_HOST")
+        reason = "no Thanos host configured; set THANOS_HOST or pass thanos_host"
+        report = skipped_report(
+            start=start,
+            end=end,
+            reason=reason,
+            ns_openclaw=ns_openclaw,
+            ns_openshell=ns_openshell,
+            openclaw_pod=openclaw_pod,
+        )
+        write_report(out_dir, report)
+        print(f"WARNING: {reason}; skipping Prometheus collection", file=sys.stderr)
+        return report
+    token_error = ""
+    try:
+        token = oc_token()
+    except Exception as exc:
+        token = ""
+        token_error = str(exc)
+        print(f"WARNING: could not obtain oc token for Thanos: {exc}", file=sys.stderr)
+    if not token and not token_error:
+        print("WARNING: could not obtain oc token for Thanos", file=sys.stderr)
     out_dir.mkdir(parents=True, exist_ok=True)
     report: dict[str, Any] = {
         "schema": "agentic.trace-replay.prometheus-collection.v1",
@@ -174,6 +229,8 @@ def collect(
         "app_queries": len(openclaw_app_queries()),
         "app_success": 0,
     }
+    if not token:
+        report["warnings"].append("could not obtain an oc token; Thanos queries were skipped")
 
     # cAdvisor container metrics at 1s. The v2 monitoring manifest installs a
     # dedicated 1-second scrape job; do not silently downsample this source.
@@ -190,6 +247,8 @@ def collect(
         report["metrics"].append(name)
     print(f"  {cadvisor_success}/{len(cadvisor_queries(ns_openclaw, ns_openshell, openclaw_pod))} queries returned data")
     report["cadvisor_success"] = cadvisor_success
+    if token and cadvisor_success == 0:
+        report["warnings"].append("cAdvisor queries returned no data")
 
     # OpenClaw application metrics at 1s
     print("Collecting OpenClaw app metrics (1s step)...")
@@ -206,6 +265,8 @@ def collect(
 
     print(f"  {app_success}/{len(openclaw_app_queries())} queries returned data")
     report["app_success"] = app_success
+    if token and app_success == 0:
+        report["warnings"].append("OpenClaw app queries returned no data")
 
     # Fallback: direct scrape if Thanos app metrics are empty
     if app_success == 0 and openclaw_url:
@@ -223,5 +284,5 @@ def collect(
         else:
             report["warnings"].append("Both Thanos and direct scrape failed for app metrics")
 
-    (out_dir / "collect_manifest.json").write_text(json.dumps(report, indent=2), encoding="utf-8")
+    write_report(out_dir, report)
     return report

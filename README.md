@@ -103,6 +103,34 @@ workloads a run selects. The gateway token `change-me-gateway-token` is a local
 placeholder that appears in the manifest and in the controller defaults; change
 it in every place or not at all.
 
+### Customer-owned inputs
+
+The defaults describe the local demo. For a customer cluster, supply these
+values explicitly:
+
+| Input | Environment / flag | Required | Notes |
+| --- | --- | --- | --- |
+| Worker nodes | `NODES` / `--nodes` | yes for a real run | Comma-separated approved nodes, for example `node-a,node-b`. |
+| Kubeconfig | `KUBECONFIG` / `--kubeconfig` | no | Defaults to the standard `oc` config; set it explicitly for a non-default cluster. |
+| OpenShell namespace | `OPENSHELL_NAMESPACE` / `--openshell-namespace` | yes | Defaults to `openshell-tracesim`. |
+| OpenShell gateway | `GATEWAY_ENDPOINT` (bench) or `TRACE_REPLAY_OPENSHELL_GATEWAY_ENDPOINT` / `--openshell-gateway-endpoint` | yes | Use the gateway endpoint reachable from the controller, for example `http://openshell.example:8080`. |
+| Agent image | `TRACE_REPLAY_OPENCLAW_IMAGE` | yes | Must contain the OpenShell client used by your gateway. |
+| Kueue webhook | `TRACE_REPLAY_KUEUE_NAMESPACE`, `TRACE_REPLAY_KUEUE_WEBHOOK_SERVICE` | only if non-default | Defaults to `kueue-system/kueue-webhook-service`. |
+| Workspace storage class | `STORAGE_CLASS` (bench) or `TRACE_REPLAY_WORKSPACE_STORAGE_CLASS` / `--workspace-storage-class` | no | Empty uses the cluster default. |
+| Workspace PVCs | `PVCS=node-a=pvc-a,node-b=pvc-b` (bench) / `--workspace-pvcs` | no | Existing RWO claims, one per node; otherwise the controller creates run-owned workspace PVCs. |
+| AppWorld data PVC | `TRACE_REPLAY_APPWORLD_DATA_PVC` / `--appworld-data-pvc` | for `pa` workload | RWO claim in the AppWorld backend namespace. |
+| AppWorld data source | `TRACE_REPLAY_APPWORLD_DATA` / `--appworld-data` | for `pa` staging | Directory containing `base_dbs/` and `tasks/`. |
+| AppWorld task map | `TRACE_REPLAY_APPWORLD_TASK_MAP` / `--appworld-task-map` | for `pa` | The repository ships `config/appworld-session-task-map-full.json`; pass it explicitly if the default path is not populated. |
+| Reuse AppWorld data | `TRACE_REPLAY_SKIP_APPWORLD_STAGING=1` / `--skip-appworld-staging` | for a pre-populated PVC | Verifies `/appworld/data/base_dbs/spotify.db` and `/appworld/data/tasks`; does not require the controller ownership label. |
+| Thanos | `THANOS_HOST`; optional `PROM_TOKEN` | no | CPU/memory collection only. If unset or unreachable, the manifest records a warning and traces still complete. |
+
+By default the controller creates or reuses an **owned** AppWorld PVC and stages
+data from `--appworld-data`. An existing PVC without the
+`managed-by: trace-replay-experiment` label is refused in that mode, so a
+customer-owned volume cannot be overwritten by accident. Use
+`--skip-appworld-staging` (or `TRACE_REPLAY_SKIP_APPWORLD_STAGING=1`) to reuse a
+pre-populated claim instead.
+
 ## Replay corpus
 
 The corpus is assembled from recorded sessions, not generated:
@@ -132,6 +160,15 @@ appworld download data
 Point `TRACE_REPLAY_APPWORLD_DATA` at the directory holding `base_dbs/` and
 `tasks/` (defaults to `../appworld-runtime/data`). The session-to-task mapping
 ships in `config/appworld-session-task-map-full.json`.
+
+To reuse a pre-populated customer-owned PVC instead of staging:
+
+```bash
+TRACE_REPLAY_SKIP_APPWORLD_STAGING=1 \
+TRACE_REPLAY_APPWORLD_DATA_PVC=my-appworld-data \
+  ./scripts/bench --agents 4 --nodes node-a,node-b --workload-dist pa \
+  --corpus data/replay.json
+```
 
 ## Running
 
@@ -180,10 +217,11 @@ Use `--plan` there for the non-mutating check.
 
 Cluster settings are flags or environment variables: `NODES` (or `--nodes`),
 `KUBECONFIG`, `THANOS_HOST` (the Thanos querier route used for CPU/memory
-collection; without it the replay completes but metric collection fails), and
-the `TRACE_REPLAY_*` set: `TRACE_REPLAY_NODE`,
-`TRACE_REPLAY_ALLOWED_NODES` (optional node allow-list, empty accepts any),
-`TRACE_REPLAY_OPENCLAW_IMAGE`, `TRACE_REPLAY_OPENSHELL_GATEWAY_ENDPOINT`,
+collection; optional - if it is unset or unreachable, the collection manifest
+records a warning and the trace still completes), and the `TRACE_REPLAY_*`
+set: `TRACE_REPLAY_NODE`, `TRACE_REPLAY_ALLOWED_NODES` (optional node
+allow-list, empty accepts any), `TRACE_REPLAY_OPENCLAW_IMAGE`,
+`TRACE_REPLAY_OPENSHELL_GATEWAY_ENDPOINT`,
 `TRACE_REPLAY_WORKSPACE_STORAGE_CLASS`.
 
 ## What you get
