@@ -11,6 +11,7 @@ sys.path.insert(0, str(Path(__file__).parents[1] / "scripts"))
 from run_experiment import (
     _preflight_kueue_admission,
     build_queue,
+    ensure_shared_workspace,
     pack_mock_corpus_sessions,
     prepare_workload_corpus,
 )
@@ -147,3 +148,45 @@ def test_kueue_admission_preflight_requires_ready_endpoint():
     )
     with pytest.raises(RuntimeError, match="no ready endpoints"):
         _preflight_kueue_admission(broken)
+
+
+class _FakeWorkspaceCluster:
+    node = "node-a"
+
+    def __init__(self):
+        self.applied = []
+
+    def run(self, args, *, input_text=None, check=True):
+        return ""
+
+    def json(self, args):
+        raise AssertionError(args)
+
+    def apply_json_in(self, namespace, value):
+        self.applied.append(value)
+
+    def delete_owned(self, namespace, kind, name):
+        return None
+
+
+def _workspace_pvc(storage_class):
+    cluster = _FakeWorkspaceCluster()
+    ensure_shared_workspace(
+        cluster,
+        "openshell-tracesim",
+        "trace-replay-workspace",
+        storage_class,
+        ["agent-1"],
+        "ReadWriteMany",
+        target_node="node-a",
+    )
+    pvc = next(item for item in cluster.applied if item["kind"] == "PersistentVolumeClaim")
+    return pvc["spec"]
+
+
+def test_workspace_pvc_omits_storage_class_so_the_cluster_default_applies():
+    assert "storageClassName" not in _workspace_pvc("")
+
+
+def test_workspace_pvc_pins_an_explicit_storage_class():
+    assert _workspace_pvc("cephfs-fast")["storageClassName"] == "cephfs-fast"

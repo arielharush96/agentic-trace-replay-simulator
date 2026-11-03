@@ -558,9 +558,18 @@ def ensure_shared_workspace(
         if labels.get("managed-by") != "trace-replay-experiment":
             raise RuntimeError(f"refusing to reuse unowned PVC {openshell_ns}/{pvc_name}")
         spec = pvc.get("spec", {})
-        if access_mode not in (spec.get("accessModes") or []) or spec.get("storageClassName") != storage_class:
+        if access_mode not in (spec.get("accessModes") or []) or (
+            storage_class and spec.get("storageClassName") != storage_class
+        ):
             raise RuntimeError(f"existing PVC {openshell_ns}/{pvc_name} has incompatible access mode/storage class settings")
     else:
+        workspace_spec: dict[str, Any] = {
+            "accessModes": [access_mode],
+            "resources": {"requests": {"storage": "10Gi"}},
+            "volumeMode": "Filesystem",
+        }
+        if storage_class:
+            workspace_spec["storageClassName"] = storage_class
         cluster.apply_json_in(openshell_ns, {
             "apiVersion": "v1",
             "kind": "PersistentVolumeClaim",
@@ -568,12 +577,7 @@ def ensure_shared_workspace(
                 "name": pvc_name,
                 "labels": {"managed-by": "trace-replay-experiment", "component": "openshell-shared-workspace"},
             },
-            "spec": {
-                "accessModes": [access_mode],
-                "storageClassName": storage_class,
-                "resources": {"requests": {"storage": "10Gi"}},
-                "volumeMode": "Filesystem",
-            },
+            "spec": workspace_spec,
         })
     # Keep the preparation Job scoped to this run's workspace prefix.  Delete
     # a stale copy first so a retry can recreate it with the current subpaths.
@@ -1697,6 +1701,12 @@ def ensure_appworld_data(
     if missing:
         raise RuntimeError(f"AppWorld data is incomplete; missing: {', '.join(missing)}")
 
+    pvc_spec: dict[str, Any] = {
+        "accessModes": ["ReadWriteOnce"],
+        "resources": {"requests": {"storage": "1Gi"}},
+    }
+    if storage_class:
+        pvc_spec["storageClassName"] = storage_class
     pvc = {
         "apiVersion": "v1",
         "kind": "PersistentVolumeClaim",
@@ -1705,11 +1715,7 @@ def ensure_appworld_data(
             "namespace": namespace,
             "labels": {"managed-by": "trace-replay-experiment", "component": "appworld-data"},
         },
-        "spec": {
-            "accessModes": ["ReadWriteOnce"],
-            "storageClassName": storage_class,
-            "resources": {"requests": {"storage": "1Gi"}},
-        },
+        "spec": pvc_spec,
     }
     existing = cluster.run(["-n", namespace, "get", "pvc", pvc_name], check=False).strip()
     if existing:
@@ -4479,7 +4485,11 @@ def main() -> int:
         "--workspace-pvcs",
         help="explicit node-to-owned-RWO-PVC map, e.g. node-a=pvc-a,node-b=pvc-b",
     )
-    parser.add_argument("--workspace-storage-class", default=os.environ.get("TRACE_REPLAY_WORKSPACE_STORAGE_CLASS", "rook-cephfs-fast"))
+    parser.add_argument(
+        "--workspace-storage-class",
+        default=os.environ.get("TRACE_REPLAY_WORKSPACE_STORAGE_CLASS", ""),
+        help="StorageClass for workspace PVCs; empty uses the cluster default",
+    )
     parser.add_argument("--workspace-access-mode", choices=("ReadWriteMany", "ReadWriteOnce"), default=os.environ.get("TRACE_REPLAY_WORKSPACE_ACCESS_MODE", "ReadWriteMany"))
     parser.add_argument("--kubeconfig", default=os.environ.get("KUBECONFIG"))
     parser.add_argument("--jaeger", default="http://127.0.0.1:16686")
@@ -5091,7 +5101,9 @@ def main() -> int:
                 if labels.get("managed-by") != "trace-replay-experiment":
                     raise RuntimeError(f"refusing to reuse unowned workspace PVC {args.openshell_namespace}/{pvc_name}")
                 spec = pvc.get("spec", {})
-                if "ReadWriteOnce" not in (spec.get("accessModes") or []) or spec.get("storageClassName") != args.workspace_storage_class:
+                if "ReadWriteOnce" not in (spec.get("accessModes") or []) or (
+                    args.workspace_storage_class and spec.get("storageClassName") != args.workspace_storage_class
+                ):
                     raise RuntimeError(f"existing PVC {args.openshell_namespace}/{pvc_name} has incompatible workspace settings")
                 if pvc.get("status", {}).get("phase") != "Bound":
                     raise RuntimeError(f"existing workspace PVC {args.openshell_namespace}/{pvc_name} is not Bound")

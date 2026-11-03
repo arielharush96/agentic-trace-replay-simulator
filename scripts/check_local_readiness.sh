@@ -6,7 +6,14 @@ set -euo pipefail
 # invoking oc or creating any Kubernetes resource.
 
 ROOT="$(cd "$(dirname "${BASH_SOURCE[0]}")/.." && pwd)"
-CORPUS="${1:-$ROOT/results/dataset-audit/20260908T145713Z/full-replay.json}"
+CORPUS="${1:-$ROOT/data/replay.json}"
+REQUIRE_TRACES="${REQUIRE_TRACES:-100}"
+if [ ! -f "$CORPUS" ]; then
+  echo "[local-readiness] corpus not found: $CORPUS" >&2
+  echo "[local-readiness] build one with: python -m trace_replay_sim ingest --out data/replay.json --limit 400" >&2
+  echo "[local-readiness] the gate needs $REQUIRE_TRACES traces across all four workloads; lower REQUIRE_TRACES for a smaller corpus" >&2
+  exit 1
+fi
 TMP_ROOT="$(mktemp -d "${TMPDIR:-/tmp}/trace-replay-readiness.XXXXXX")"
 trap 'rm -rf "$TMP_ROOT"' EXIT
 
@@ -28,8 +35,7 @@ scripts/run_experiment.sh \
   --workload-plan personal_assistant=25,software_engineering_qa=25,research_deep_search=25,customer_support_ops=25 \
   --nodes "${TRACE_REPLAY_ALLOWED_NODES:-worker-a,worker-b}" \
   --workspace-access-mode ReadWriteOnce \
-  --workspace-storage-class local-test-rwo \
-  --require-traces 100 \
+  --require-traces "$REQUIRE_TRACES" \
   --plan
 
-echo "[local-readiness] PASS: code, tests, and the 100-trace production plan are valid without cluster access"
+echo "[local-readiness] PASS: code, tests, and the ${REQUIRE_TRACES}-trace production plan are valid without cluster access"
