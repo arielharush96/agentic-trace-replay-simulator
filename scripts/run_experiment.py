@@ -222,10 +222,19 @@ def workspace_name(prefix: str, index: int) -> str:
     if len(candidate) <= 19:
         return candidate
     token = hashlib.sha256(f"{prefix}:{index}".encode("utf-8")).hexdigest()[:7]
-    bounded = f"trace-replay-{token}-{index}"
+    bounded = f"replay-{token}-{index}"
     if len(bounded) > 19:
         raise ValueError(f"cannot create an OpenShell workspace name for agent {index}")
     return bounded
+
+
+def agent_name_prefix(out_name: str, run_hash: str) -> str:
+    """Return a compact run-scoped prefix for per-agent Kubernetes objects.
+
+    Agent ConfigMaps append ``-config-NN`` and use the object name as a label
+    value, which Kubernetes limits to 63 bytes.
+    """
+    return f"replay-{safe_name(out_name)[:24]}-{run_hash}-openclaw"
 
 
 def parse_workspace_pvcs(spec: str | None, target_nodes: tuple[str, ...]) -> dict[str, str]:
@@ -5087,9 +5096,9 @@ def main() -> int:
     )
     # OpenClaw validates workspace names to a maximum of 19 characters.
     # Use a run hash so a fresh run cannot reuse another experiment's
-    # workspace; `trace-replay-<8 hex>-20` is exactly 19 characters.
-    workspace_prefix = args.reuse_existing_workspace_prefix or f"trace-replay-{run_hash}"
-    agent_prefix = args.reuse_existing_agent_prefix or f"trace-replay-{safe_name(args.out.name)[:24]}-{run_hash}-openclaw"
+    # workspace; `replay-<8 hex>-100` is exactly 19 characters.
+    workspace_prefix = args.reuse_existing_workspace_prefix or f"replay-{run_hash}"
+    agent_prefix = args.reuse_existing_agent_prefix or agent_name_prefix(args.out.name, run_hash)
     log_phase(f"deployment: workspace prefix={workspace_prefix} agent prefix={agent_prefix}")
     workspace_names = [workspace_name(workspace_prefix, index) for index in range(1, args.agents + 1)]
     # RWX uses one shared workspace across nodes.  RWO uses one PVC per node,

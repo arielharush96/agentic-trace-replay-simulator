@@ -10,11 +10,13 @@ sys.path.insert(0, str(Path(__file__).parents[1] / "scripts"))
 
 from run_experiment import (
     _preflight_kueue_admission,
+    agent_name_prefix,
     build_queue,
     create_trace_job,
     ensure_shared_workspace,
     pack_mock_corpus_sessions,
     prepare_workload_corpus,
+    workspace_name,
 )
 from trace_replay_sim.backend_registry import load_backends, parse_workload_plan
 from trace_replay_sim.swe_manifest import SweTask
@@ -293,3 +295,24 @@ def test_trace_job_without_client_events_sends_one_user_request(tmp_path):
 
     assert "--client-turns" not in args
     assert "--session-turns" not in args
+
+
+def test_workspace_names_fit_the_openshell_limit():
+    names = [workspace_name("replay-0123abcd", index) for index in range(1, 101)]
+
+    assert all(len(name) <= 19 for name in names)
+    assert len(set(names)) == 100
+
+
+def test_workspace_names_compact_an_overlong_prefix():
+    names = [workspace_name("client-boundary-smoke-20261103d", index) for index in range(1, 5)]
+
+    assert all(len(name) <= 19 for name in names)
+    assert len(set(names)) == 4
+
+
+def test_agent_resource_names_fit_the_label_value_limit():
+    prefix = agent_name_prefix("client-boundary-smoke-20261103e", "b6d25e89")
+
+    assert len(f"{prefix}-config-01") <= 63
+    assert len(f"{prefix}-01") <= 63
