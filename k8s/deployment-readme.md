@@ -1,3 +1,43 @@
+## Replay corpus
+
+The corpus is assembled from recorded sessions, not generated:
+
+```bash
+python -m trace_replay_sim ingest --out data/replay.json
+```
+
+`ingest` streams [Exgentic/agent-llm-traces](https://huggingface.co/datasets/Exgentic/agent-llm-traces)
+(1,781 sessions, CDLA-Permissive-2.0) and keeps 50 by default. The limit
+truncates in dataset order, so raise it, or select with `--benchmark` and
+`--harness`, to cover all four workloads:
+
+```bash
+python -m trace_replay_sim ingest --out data/replay.json --limit 1781
+```
+
+`pa` runs also need the AppWorld environment, which is not redistributable and
+not part of the public image:
+
+```bash
+pip install appworld
+appworld install
+appworld download data
+```
+
+Point `TRACE_REPLAY_APPWORLD_DATA` at the directory holding `base_dbs/` and
+`tasks/` (defaults to `../appworld-runtime/data`). The session-to-task mapping
+ships in `config/appworld-session-task-map-full.json`.
+
+To reuse a pre-populated customer-owned PVC instead of staging:
+
+```bash
+TRACE_REPLAY_SKIP_APPWORLD_STAGING=1 \
+TRACE_REPLAY_APPWORLD_DATA_PVC=my-appworld-data \
+  ./scripts/bench --agents 4 --nodes node-a,node-b --workload-dist pa \
+  --corpus data/replay.json
+```
+
+
 ## Cluster prerequisites
 
 The tool targets Red Hat OpenShift AI and relies on the Kueue admission that
