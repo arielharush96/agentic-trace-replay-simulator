@@ -159,8 +159,6 @@ spec:
       labels:
         app: trace-replay-openclaw-shell
     spec:
-      imagePullSecrets:
-        - name: quay-pull
       initContainers:
         - name: install-openshell-cli
           image: python:3.12-slim
