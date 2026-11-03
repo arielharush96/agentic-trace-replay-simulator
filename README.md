@@ -2,7 +2,7 @@
 
 Want to benchmark your own agentic AI deployment? On different CPUs, with a
 different harness, after an optimization, or as you scale from ten agents to a
-hundred - and to the thousand you are planning. This tool replays recorded
+hundred and on to the thousand you are planning. This tool replays recorded
 agent sessions at the scale you choose and shows where the performance
 bottlenecks actually are: the harness that assembles context, the sandbox that
 runs tools, the services behind those tools, or the queue that forms when the
@@ -60,19 +60,68 @@ model's answer quality.
 `scripts/bench --help` has the full list, including retries, output directory, and
 a set of worked examples.
 
-## Running
+## Cluster prerequisites
 
-You need an OpenShift AI cluster with a reachable OpenShell gateway, an agent
-image available to it, a kubeconfig, and a replay corpus. `bench` itself needs
-bash 4 or newer.
+The tool targets Red Hat OpenShift AI and relies on the Kueue admission that
+ships with it: every experiment Job is admitted through that webhook. If the
+Kueue deployment lives outside `kueue-system`, point the controller at it with
+`TRACE_REPLAY_KUEUE_NAMESPACE` and `TRACE_REPLAY_KUEUE_WEBHOOK_SERVICE`.
+
+| Requirement | Notes |
+| --- | --- |
+| OpenShift AI cluster | `oc get svc -n kueue-system kueue-webhook-service` confirms the admission webhook. |
+| OpenShell gateway | Deployed by you; the controller targets `TRACE_REPLAY_OPENSHELL_GATEWAY_ENDPOINT`. |
+| Agent image | Your own OpenClaw-on-OpenShell image; the manifests carry `quay.io/example/openclaw-openshell:latest` as a placeholder. |
+| Storage class | Cluster default for the workspace PVCs, or set `TRACE_REPLAY_WORKSPACE_STORAGE_CLASS`. |
+| CLI tooling | `oc` with a kubeconfig, `bash` 4 or newer, Python 3.11. |
+
+Apply the namespace objects the controller expects to find already present:
+
+```bash
+oc apply -f k8s/00-namespace.yaml -f k8s/10-mock-llm.yaml -f k8s/20-jaeger.yaml \
+         -f k8s/34-openshell-sandbox-scc.yaml -f k8s/35-openclaw-shell.yaml \
+         -f k8s/openshell-certgen.yaml -f k8s/50-monitoring.yaml
+```
+
+The workload backends next to them are deployed by the controller for the
+workloads a run selects.
+
+## Replay corpus
+
+The corpus is assembled from recorded sessions, not generated:
+
+```bash
+python -m trace_replay_sim ingest --out data/replay.json
+```
+
+`ingest` streams [Exgentic/agent-llm-traces](https://huggingface.co/datasets/Exgentic/agent-llm-traces)
+(1,781 sessions, CDLA-Permissive-2.0) and keeps 50 by default. The limit
+truncates in dataset order, so raise it, or select with `--benchmark` and
+`--harness`, to cover all four workloads:
+
+```bash
+python -m trace_replay_sim ingest --out data/replay.json --limit 1781
+```
+
+`pa` runs also need the AppWorld environment, which is not redistributable and
+not part of the public image:
+
+```bash
+pip install appworld
+appworld install
+appworld download data
+```
+
+Point `TRACE_REPLAY_APPWORLD_DATA` at the directory holding `base_dbs/` and
+`tasks/` (defaults to `../appworld-runtime/data`). The session-to-task mapping
+ships in `config/appworld-session-task-map-full.json`.
+
+## Running
 
 ```bash
 # once per checkout
 python3 -m venv .venv && source .venv/bin/activate
 pip install -e ".[dev]"
-
-# once: build the replay corpus from recorded Exgentic traces
-python -m trace_replay_sim ingest --out data/replay.json
 
 # see what would run, without touching the cluster
 ./scripts/bench --agents 100 --corpus data/replay.json --dry-run
@@ -118,7 +167,7 @@ same 100-agent queue-building path locally, without touching the cluster.
 ```text
 src/trace_replay_sim/   replay driver, simulator, harnesses, telemetry, analysis
 scripts/                bench entrypoint, cluster controller, backends, gates
-k8s/                    example manifests: mock LLM, backends, gateway, agents
+k8s/                    namespace objects, agent service template, workload backends
 config/                 backend manifest, SWE task manifest, AppWorld task map
 docs/                   architecture diagram
 tests/                  unit and integration tests
