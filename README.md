@@ -2,7 +2,7 @@
 
 Want to benchmark your own agentic AI deployment? On different CPUs, with a
 different harness, after an optimization, or as you scale from ten agents to a
-hundred -- and to the thousand you are planning. This tool replays recorded
+hundred - and to the thousand you are planning. This tool replays recorded
 agent sessions at the scale you choose and shows where the performance
 bottlenecks actually are: the harness that assembles context, the sandbox that
 runs tools, the services behind those tools, or the queue that forms when the
@@ -18,18 +18,14 @@ That is what makes a before/after comparison mean something.
 
 Recorded multi-turn sessions go in. A replay driver spreads them across agents,
 balances the workload mix, and schedules them at the concurrency you ask for.
-Each agent then does its normal work -- context assembly, tool decisions,
-response processing -- against a simulator that returns the recorded response at
+Each agent then does its normal work - context assembly, tool decisions,
+response processing against a simulator that returns the recorded response at
 a configurable pace. Tool calls take the ordinary route into an OpenShell sandbox
 and out to the workload backend or external service.
 
 OpenTelemetry spans, CPU and memory samples, and tool and sandbox metrics are
 correlated per turn, so the answer is "this stage, this much" rather than a
 single end-to-end number.
-
-OpenClaw is the harness used in the reference evaluation. Any OpenAI-compatible
-agent endpoint can be driven through the `openai-compatible` adapter, which is
-how two harnesses get compared on the same traces.
 
 Four workload classes are replayed with their behaviour intact:
 
@@ -112,10 +108,7 @@ Cluster settings are flags or `TRACE_REPLAY_*` variables: `TRACE_REPLAY_NODE`,
 
 Each run writes per-turn and per-tool CSV and JSON, OpenTelemetry traces, cgroup
 and Prometheus CPU/memory series, sandbox and tool timing, node and warm-pool
-assignments, and the analysis plots. A trace is admitted to the aggregate only
-after the output gate confirms the expected turn and tool cardinality, non-empty
-telemetry, and valid resource series; otherwise the run fails with
-`output_validation_error.json` instead of publishing empty plots.
+assignments, and the analysis plots.
 
 Before requesting cluster access, `scripts/check_local_readiness.sh` runs the
 same 100-agent queue-building path locally, without touching the cluster.
