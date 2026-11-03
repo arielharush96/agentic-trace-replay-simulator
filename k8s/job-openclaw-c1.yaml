@@ -1,0 +1,51 @@
+apiVersion: batch/v1
+kind: Job
+metadata:
+  name: trace-replay-openclaw-c1
+  namespace: trace-replay
+spec:
+  backoffLimit: 1
+  ttlSecondsAfterFinished: 7200
+  template:
+    spec:
+      restartPolicy: Never
+      containers:
+        - name: driver
+          image: python:3.12-slim
+          command: ["python", "/app/driver.py"]
+          args:
+            - --corpus
+            - /data/replay.json
+            - --out
+            - /results
+            - --layer
+            - openclaw
+            - --url
+            - http://openclaw.trace-replay.svc.cluster.local:18789
+            - --model
+            - openclaw/perf_agent
+            - --token
+            - change-me-gateway-token
+            - --concurrency
+            - "1"
+            - --limit
+            - "1"
+            - --timeout
+            - "900"
+            - --stream
+          volumeMounts:
+            - name: src
+              mountPath: /app
+            - name: corpus
+              mountPath: /data
+            - name: results
+              mountPath: /results
+      volumes:
+        - name: src
+          configMap:
+            name: driver-src
+        - name: corpus
+          configMap:
+            name: replay-corpus
+        - name: results
+          emptyDir: {}

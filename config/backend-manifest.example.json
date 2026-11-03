@@ -1,0 +1,49 @@
+{
+  "backends": {
+    "software_engineering_qa": {
+      "name": "trace-replay-swebench-backend",
+      "benchmark": "swebench",
+      "namespace": "trace-replay",
+      "service": "trace-replay-swebench-backend",
+      "port": 8092,
+      "health_path": "/health",
+      "execute_path": "/execute",
+      "events_path": "/events",
+      "event_name": "swebench_tool",
+      "real_backend": true,
+      "deployment_mode": "managed",
+      "manifest": "k8s/swebench-backend.yaml",
+      "notes": "SWE audit boundary; repository, patch, and tests run in the pinned OpenShell task image."
+    },
+    "research_deep_search": {
+      "name": "trace-replay-browsecompplus-backend",
+      "benchmark": "browsecompplus",
+      "namespace": "trace-replay",
+      "service": "trace-replay-browsecompplus-backend",
+      "port": 8093,
+      "health_path": "/health",
+      "execute_path": "/execute",
+      "events_path": "/events",
+      "event_name": "browsecompplus_tool",
+      "real_backend": true,
+      "deployment_mode": "managed",
+      "manifest": "k8s/browsecompplus-backend.yaml",
+      "notes": "Stateful search/document backend with the recorded corpus index."
+    },
+    "customer_support_ops": {
+      "name": "trace-replay-tau2-backend",
+      "benchmark": "tau2",
+      "namespace": "trace-replay",
+      "service": "trace-replay-tau2-backend",
+      "port": 8094,
+      "health_path": "/health",
+      "execute_path": "/execute",
+      "events_path": "/events",
+      "event_name": "tau2_tool",
+      "real_backend": true,
+      "deployment_mode": "managed",
+      "manifest": "k8s/tau2-backend.yaml",
+      "notes": "Stateful τ-bench airline/retail/telecom policy and booking backend."
+    }
+  }
+}

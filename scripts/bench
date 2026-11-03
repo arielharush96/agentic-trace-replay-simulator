@@ -1,0 +1,445 @@
+#!/usr/bin/env bash
+#  bench - Trace Replay Benchmark Runner
+#
+#  A single-command benchmark for OpenClaw + OpenShell agents.
+#  Replays recorded multi-turn conversations through deployed
+#  agents with deterministic mock LLM sidecars and warm sandboxes.
+set -euo pipefail
+
+if ((BASH_VERSINFO[0] < 4)); then
+    echo "Error: bench requires bash 4 or newer; macOS ships bash 3.2." >&2
+    echo "       Install a newer bash (eg. 'brew install bash') or run on Linux." >&2
+    exit 1
+fi
+
+# Defaults
+AGENTS=""
+WORKLOAD_DIST="even"
+TRACES_PER_WORKLOAD=""
+SESSION_IDS=""
+QUICK=false
+OUT_DIR=""
+DISPATCH_INTERVAL=2
+RETRIES=2
+SIMULATED_TTFT=""
+SIMULATED_ITL=""
+CORPUS="${CORPUS:-data/replay.json}"
+WARM_POOL=""       # default: same as --agents
+COLD_RATIO=""      # e.g. 0.2 means 20% of agents use cold-start
+LIST_WORKLOADS=false
+LIST_SESSIONS=""
+DRY_RUN=false
+
+# Workload registry
+declare -A WL_BENCH=(
+    [swe]="software_engineering_qa"
+    [pa]="personal_assistant"
+    [research]="research_deep_search"
+    [cs]="customer_support_ops"
+)
+declare -A WL_DESC=(
+    [swe]="SWE-bench: real Git repos, patch/QA workflows"
+    [pa]="AppWorld: multi-app API workflows (email, calendar, shopping)"
+    [research]="BrowseComp+: iterative search + document reading"
+    [cs]="Tau2: policy-driven support (airline/retail/telecom)"
+)
+
+# Parse arguments
+while [[ $# -gt 0 ]]; do
+    case $1 in
+        --agents|-a)         AGENTS="$2"; shift 2 ;;
+        --workload-dist|-w)  WORKLOAD_DIST="$2"; shift 2 ;;
+        --traces|-t)         TRACES_PER_WORKLOAD="$2"; shift 2 ;;
+        --session-ids)       SESSION_IDS="$2"; shift 2 ;;
+        --dispatch-interval) DISPATCH_INTERVAL="$2"; shift 2 ;;
+        --retries)           RETRIES="$2"; shift 2 ;;
+        --simulated-ttft)    SIMULATED_TTFT="$2"; shift 2 ;;
+        --simulated-itl)     SIMULATED_ITL="$2"; shift 2 ;;
+        --warm-pool)         WARM_POOL="$2"; shift 2 ;;
+        --cold-ratio)        COLD_RATIO="$2"; shift 2 ;;
+        --out|-o)            OUT_DIR="$2"; shift 2 ;;
+        --corpus)            CORPUS="$2"; shift 2 ;;
+        --quick)             QUICK=true; shift ;;
+        --dry-run)           DRY_RUN=true; shift ;;
+        --list-workloads)    LIST_WORKLOADS=true; shift ;;
+        --list-sessions)     LIST_SESSIONS="$2"; shift 2 ;;
+        --help|-h)
+            cat <<'HELP'
+bench - Trace Replay Benchmark Runner
+
+USAGE
+  bench --agents N [options]
+
+REQUIRED
+  --agents N, -a N          Number of concurrent agents (e.g. 4, 8, 100)
+
+WORKLOAD DISTRIBUTION
+  --workload-dist DIST, -w DIST
+       How to distribute agents across workloads:
+         even     (default) Equal split across all 4 workloads
+         swe      Only Software Engineering & QA
+         pa       Only Personal Assistant (AppWorld)
+         research Only Research & Deep Search
+         cs       Only Customer Support & Ops
+         swe=2,pa=1,research=1,cs=0
+                  Custom: explicit count per workload
+         swe:50,pa:30,research:15,cs:5
+                  Custom: percentage per workload (must sum to 100)
+
+       Short aliases: swe, pa, research, cs
+       Full names also accepted: software_engineering_qa, etc.
+
+TRACE SELECTION
+  --traces N, -t N          Traces per workload (default: 1 for small runs,
+                             auto-computed from corpus for large runs)
+  --session-ids IDS         Comma-separated session IDs (overrides --traces)
+
+EXECUTION
+  --dispatch-interval SEC   Seconds between trace admissions (default: 2)
+  --retries N               Retry count for failed traces (default: 2)
+  --simulated-ttft MS       Simulated time-to-first-token in ms
+                             (overrides recorded timing; e.g. 50 = 50ms TTFT)
+  --simulated-itl MS        Simulated inter-token latency in ms
+                             (e.g. 10 = 10ms between tokens)
+  --warm-pool N             Warm sandbox pool size (default: same as --agents)
+  --cold-ratio RATIO        Fraction of agents using cold-start fallback
+                             (e.g. 0.2 = 20% cold, 80% warm) - for
+                             controlled cold-start experiments
+
+OUTPUT
+  --out DIR, -o DIR         Output directory (default: results/bench-TIMESTAMP)
+  --corpus FILE             Path to corpus JSON (default: data/replay.json)
+
+MODES
+  --quick                   Skip deployment re-verification (fastest restart)
+  --dry-run                 Show what would run without executing
+  --list-workloads          Show available workloads with descriptions
+  --list-sessions WORKLOAD  Show available sessions for a workload
+
+EXAMPLES
+  # 4 agents, 1 trace per workload (classic demo)
+  bench --agents 4
+
+  # 100 agents, 25 per workload (full-scale experiment)
+  bench --agents 100
+
+  # Only Software Engineering, 50 agents
+  bench --agents 50 --workload-dist swe
+
+  # 60% SWE, 20% PA, 20% CS (no research)
+  bench --agents 100 --workload-dist swe:60,pa:20,cs:20
+
+  # Near-instant model (maximum infrastructure stress)
+  bench --agents 100 --simulated-ttft 1 --simulated-itl 0.1
+
+  # Realistic fast model (20ms TTFT, 5ms ITL)
+  bench --agents 100 --simulated-ttft 20 --simulated-itl 5
+
+  # TTFT-only stress (long first-token wait, instant decode)
+  bench --agents 4 --simulated-ttft 500 --simulated-itl 0.1
+
+  # 10 agents with 20% cold-start fallback
+  bench --agents 10 --cold-ratio 0.2
+
+  # Hand-picked sessions
+  bench --agents 4 --session-ids id1,id2,id3,id4
+
+  # Fast restart without re-verification
+  bench --agents 4 --quick
+
+  # See what would run
+  bench --agents 100 --dry-run
+
+  # List available workloads
+  bench --list-workloads
+
+  # List sessions for a workload
+  bench --list-sessions swe
+HELP
+            exit 0 ;;
+        *) echo "Unknown: $1 (try --help)"; exit 1 ;;
+    esac
+done
+
+# List workloads
+if $LIST_WORKLOADS; then
+    echo ""
+    echo "Available workloads:"
+    echo ""
+    printf "  %-12s %-28s %s\n" "ALIAS" "NAME" "DESCRIPTION"
+    printf "  %-12s %-28s %s\n" "-----" "----" "-----------"
+    for key in swe pa research cs; do
+        printf "  %-12s %-28s %s\n" "$key" "${WL_BENCH[$key]}" "${WL_DESC[$key]}"
+    done
+    echo ""
+    exit 0
+fi
+
+if [[ ! -f "$CORPUS" ]]; then
+    echo "Error: corpus not found: $CORPUS" >&2
+    echo "       pass --corpus FILE, or create one with: trace-replay-sim ingest --out data/replay.json" >&2
+    exit 1
+fi
+
+if [[ -n "$LIST_SESSIONS" ]]; then
+    KEY="$LIST_SESSIONS"
+    [[ -n "${WL_BENCH[$KEY]:-}" ]] && WL="${WL_BENCH[$KEY]}" || WL="$KEY"
+    python3 -c "
+import json
+c = json.load(open('$CORPUS'))
+sessions = [s for s in c['sessions'] if s['workload'] == '$WL']
+sessions.sort(key=lambda s: len(s['turns']))
+print(f'\n{len(sessions)} sessions for $WL:\n')
+for s in sessions:
+    tools = s['tool_call_count']
+    turns = len(s['turns'])
+    events = len(s.get('client_events', []))
+    conv = ' (conversational)' if tools == 0 else ''
+    print(f'  {s[\"session_id\"]:40s}  {turns:3d} turns  {tools:3d} calls  {events} events{conv}')
+"
+    exit 0
+fi
+
+# Validate
+if [[ -z "$AGENTS" ]]; then
+    echo "Error: --agents is required (try --help)"
+    exit 1
+fi
+
+# Resolve workload distribution
+declare -A WL_COUNT
+
+case "$WORKLOAD_DIST" in
+    even)
+        PER=$((AGENTS / 4))
+        REM=$((AGENTS % 4))
+        WL_COUNT[swe]=$PER; WL_COUNT[pa]=$PER; WL_COUNT[research]=$PER; WL_COUNT[cs]=$PER
+        # Distribute remainder
+        for k in swe pa research cs; do
+            if [[ $REM -gt 0 ]]; then
+                WL_COUNT[$k]=$((WL_COUNT[$k] + 1))
+                REM=$((REM - 1))
+            fi
+        done
+        ;;
+    swe|pa|research|cs|software_engineering_qa|personal_assistant|research_deep_search|customer_support_ops)
+        # Single workload
+        for k in swe pa research cs; do WL_COUNT[$k]=0; done
+        if [[ -n "${WL_BENCH[$WORKLOAD_DIST]:-}" ]]; then
+            WL_COUNT[$WORKLOAD_DIST]=$AGENTS
+        else
+            # Full name given
+            for k in swe pa research cs; do
+                [[ "${WL_BENCH[$k]}" == "$WORKLOAD_DIST" ]] && WL_COUNT[$k]=$AGENTS
+            done
+        fi
+        ;;
+    *)
+        # Custom distribution: swe=2,pa=1,... or swe:50,pa:30,...
+        IFS=',' read -ra PARTS <<< "$WORKLOAD_DIST"
+        TOTAL=0
+        IS_PERCENT=false
+        for part in "${PARTS[@]}"; do
+            if [[ "$part" == *:* ]]; then
+                IS_PERCENT=true
+                key="${part%%:*}"; val="${part##*:}"
+            else
+                key="${part%%=*}"; val="${part##*=}"
+            fi
+            [[ -n "${WL_BENCH[$key]:-}" ]] || { echo "Error: unknown workload '$key'"; exit 1; }
+            WL_COUNT[$key]=$val
+            TOTAL=$((TOTAL + val))
+        done
+        # Fill unspecified workloads with 0
+        for k in swe pa research cs; do
+            [[ -z "${WL_COUNT[$key]:-}" ]] && WL_COUNT[$k]=0
+        done
+        if $IS_PERCENT; then
+            # Convert percentages to agent counts
+            for k in swe pa research cs; do
+                if [[ -n "${WL_COUNT[$k]:-}" && "${WL_COUNT[$k]}" -gt 0 ]]; then
+                    WL_COUNT[$k]=$((AGENTS * WL_COUNT[$k] / 100))
+                fi
+            done
+        elif [[ $TOTAL -ne $AGENTS ]]; then
+            echo "Warning: workload counts ($TOTAL) != agent count ($AGENTS)"
+        fi
+        ;;
+esac
+
+# Compute traces
+TOTAL_TRACES=0
+for k in swe pa research cs; do
+    TOTAL_TRACES=$((TOTAL_TRACES + WL_COUNT[$k]))
+done
+
+if [[ -z "$TRACES_PER_WORKLOAD" ]]; then
+    TRACES_PER_WORKLOAD=1
+    # For large runs, auto-scale
+    if [[ $AGENTS -gt 20 ]]; then
+        TRACES_PER_WORKLOAD=$((AGENTS / 4))
+    fi
+fi
+
+# Auto-select sessions
+if [[ -z "$SESSION_IDS" ]]; then
+    SESSION_IDS=$(python3 -c "
+import json
+c = json.load(open('$CORPUS'))
+by_wl = {}
+for s in c['sessions']:
+    by_wl.setdefault(s['workload'], []).append(s)
+picks = []
+counts = {'software_engineering_qa': ${WL_COUNT[swe]}, 'personal_assistant': ${WL_COUNT[pa]}, 'research_deep_search': ${WL_COUNT[research]}, 'customer_support_ops': ${WL_COUNT[cs]}}
+for wl, n in counts.items():
+    pool = by_wl.get(wl, [])
+    # Prefer tool-rich sessions (avoid conversational for backend mapping)
+    tool_rich = sorted([s for s in pool if s['tool_call_count'] > 0], key=lambda s: s['session_id'])
+    conversational = sorted([s for s in pool if s['tool_call_count'] == 0], key=lambda s: s['session_id'])
+    selected = (tool_rich + conversational)[:n]
+    picks.extend(s['session_id'] for s in selected)
+print(','.join(picks))
+")
+fi
+
+# Warm pool / cold ratio
+if [[ -z "$WARM_POOL" ]]; then
+    WARM_POOL=$AGENTS
+fi
+if [[ -n "$COLD_RATIO" ]]; then
+    WARM_POOL=$((AGENTS - AGENTS * COLD_RATIO * 10 / 10))
+    WARM_POOL=$(python3 -c "print(int($AGENTS * (1 - $COLD_RATIO)))")
+fi
+
+# Build workload plan string
+WORKLOAD_PLAN="personal_assistant=${WL_COUNT[pa]},research_deep_search=${WL_COUNT[research]},software_engineering_qa=${WL_COUNT[swe]},customer_support_ops=${WL_COUNT[cs]}"
+
+# Output dir
+if [[ -z "$OUT_DIR" ]]; then
+    OUT_DIR="results/bench-$(date -u +%Y%m%dT%H%M%S)"
+fi
+
+# Print configuration
+echo ""
+echo "Trace Replay Benchmark"
+echo "  agents:             $AGENTS"
+echo "  traces:             $TOTAL_TRACES"
+echo "  workloads:"
+echo "    SWE (swebench):        ${WL_COUNT[swe]}"
+echo "    PA (appworld):         ${WL_COUNT[pa]}"
+echo "    Research (browsecomp): ${WL_COUNT[research]}"
+echo "    CS (tau2):             ${WL_COUNT[cs]}"
+echo "  concurrent workers: $AGENTS"
+echo "  warm pool:          $WARM_POOL"
+if [[ -n "$COLD_RATIO" ]]; then
+    COLD=$((AGENTS - WARM_POOL))
+    echo "  cold start:         $COLD"
+fi
+echo "  dispatch:           ${DISPATCH_INTERVAL}s"
+echo "  retries:            $RETRIES"
+if [[ -n "$SIMULATED_TTFT" || -n "$SIMULATED_ITL" ]]; then
+    echo "  simulated timing:   ttft=${SIMULATED_TTFT:-default}ms itl=${SIMULATED_ITL:-default}ms"
+fi
+echo "  mode:               client-boundary replay"
+echo "  model:              mock LLM sidecar (deterministic)"
+echo "  output:             $OUT_DIR"
+echo ""
+
+# Print trace-to-agent assignment
+echo "  Trace Assignment:"
+echo "  ------------------------------------------------------------"
+python3 -c "
+import json
+c = json.load(open('$CORPUS'))
+by_id = {s['session_id']: s for s in c['sessions']}
+ids = '$SESSION_IDS'.split(',')
+for i, sid in enumerate(ids, 1):
+    s = by_id.get(sid, {})
+    wl = s.get('workload', '?')
+    bench = s.get('benchmark', '?')
+    turns = len(s.get('turns', []))
+    calls = s.get('tool_call_count', 0)
+    events = len(s.get('client_events', []))
+    agent = f'agent-{i:02d}'
+    conv = ' [conversational]' if calls == 0 else ''
+    print(f'    {agent}  ←  {sid}  ({bench}, {turns} turns, {calls} calls, {events} msgs){conv}')
+"
+echo ""
+
+# Dry run
+if $DRY_RUN; then
+    echo "  [dry-run] Would run these sessions:"
+    echo ""
+    IFS=',' read -ra IDS <<< "$SESSION_IDS"
+    for sid in "${IDS[@]}"; do
+        echo "    $sid"
+    done
+    echo ""
+    echo "  [dry-run] Workload plan: $WORKLOAD_PLAN"
+    echo ""
+    exit 0
+fi
+
+# Infrastructure
+export KUBECONFIG=${KUBECONFIG:-$HOME/.kube/config}
+NODES="${NODES:?set NODES to a comma-separated list of worker nodes}"
+PVCS="${PVCS:-}"
+STORAGE_CLASS="${STORAGE_CLASS:-}"
+OPENSHELL_NAMESPACE="${OPENSHELL_NAMESPACE:-openshell}"
+GATEWAY_ENDPOINT="${GATEWAY_ENDPOINT:-}"
+
+EXTRA=""
+if $QUICK; then
+    EXTRA="--skip-resume-agent-reconcile"
+fi
+
+# Run
+echo "  ▶ Starting at $(date '+%H:%M:%S')"
+echo ""
+
+mkdir -p "$OUT_DIR"
+
+python3 scripts/run_experiment.py \
+    --execute \
+    --retries "$RETRIES" \
+    --corpus "$CORPUS" \
+    --out "$OUT_DIR" \
+    --session-ids "$SESSION_IDS" \
+    --require-traces "$TOTAL_TRACES" \
+    --workload-plan "$WORKLOAD_PLAN" \
+    --client-boundaries \
+    --backend-manifest config/backend-manifest.example.json \
+    --nodes "$NODES" \
+    ${STORAGE_CLASS:+--workspace-access-mode ReadWriteOnce --workspace-storage-class "$STORAGE_CLASS"} \
+    ${PVCS:+--workspace-pvcs "$PVCS"} \
+    --openshell-namespace "$OPENSHELL_NAMESPACE" \
+    ${GATEWAY_ENDPOINT:+--openshell-gateway-endpoint "$GATEWAY_ENDPOINT"} \
+    --agents "$AGENTS" \
+    --warm-pool-size "$WARM_POOL" \
+    --execution-workers "$AGENTS" \
+    --job-dispatch-interval "$DISPATCH_INTERVAL" \
+    ${SIMULATED_TTFT:+--simulated-ttft "$SIMULATED_TTFT"} \
+    ${SIMULATED_ITL:+--simulated-itl "$SIMULATED_ITL"} \
+    $EXTRA \
+    2>&1 | tee "$OUT_DIR/controller.log" | grep -E '^\[|complete:|failed|sandbox pool:|trace [0-9]|deployment slot|quality' | grep -v 'corpus: mapped\|mock corpus\|workspace storage map\|workspace prefix\|storage: reusing\|temporary experiment\|deployment: preparing\|deployment: owned mock' || true
+
+# Summary
+echo ""
+echo "Benchmark complete"
+
+if [ -f "$OUT_DIR/analysis/quality_gate.json" ]; then
+    python3 -c "
+import json
+q = json.load(open('$OUT_DIR/analysis/quality_gate.json'))
+print(f\"  quality gate:  {q.get('status', '?')}\")
+print(f\"  failures:      {q.get('failure_count', '?')}\")
+wp = q.get('workload_population', {})
+for w, p in sorted(wp.items()):
+    print(f\"  {w:28s} {p['total']} sess ({p['tool_rich']} tool, {p['conversational']} conv)\")
+"
+fi
+
+echo "  results:       $OUT_DIR"
+echo ""
+echo "  Finished at $(date '+%H:%M:%S')"
+echo ""
