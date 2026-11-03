@@ -1,12 +1,7 @@
 # Reproducible performance benchmarking and profiling for agentic systems using trace replay
 
-Want to benchmark your own agentic AI deployment? On different CPUs, with a
-different harness, after an optimization, or as you scale from ten agents to a
-hundred and on to the thousand you are planning. This tool replays recorded
-agent sessions at the scale you choose and shows where the performance
-bottlenecks actually are: the harness that assembles context, the sandbox that
-runs tools, the services behind those tools, or the queue that forms when the
-fleet runs at once.
+This tool benchmarks agentic AI deployments by replaying recorded agent sessions at configurable concurrency. It supports comparisons across CPUs and agent harnesses, measures the impact of optimizations, and reveals how performance changes as the number of concurrent agents grows.
+It breaks down where time and resources are spent: context assembly and response processing in the harness, tool execution in the sandbox and queueing under load. This helps identify performance and scale bottlenecks and measure whether a change actually improves performance.
 
 Responses are replayed, not generated, so a run needs no GPU and no live
 inference endpoint and repeats exactly: same traces, same pacing, same work.
