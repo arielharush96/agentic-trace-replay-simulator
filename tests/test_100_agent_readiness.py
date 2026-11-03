@@ -62,6 +62,16 @@ def _synthetic_100_session_corpus(path: Path) -> tuple[Path, dict[str, SweTask]]
     return path, swe_tasks
 
 
+def test_single_agent_single_workload_plan_builds_one_trace(tmp_path):
+    corpus, _ = _synthetic_100_session_corpus(tmp_path / "corpus.json")
+    allocation = parse_workload_plan("software_engineering_qa=1", 1)
+    assert allocation == {"software_engineering_qa": 1}
+
+    queue = build_queue(corpus, tmp_path / "single", allocation)
+    assert len(queue) == 1
+    assert queue[0]["workload"] == "software_engineering_qa"
+
+
 def test_100_agent_four_workload_plan_is_complete_without_cluster(tmp_path):
     corpus, swe_tasks = _synthetic_100_session_corpus(tmp_path / "corpus.json")
     allocation = parse_workload_plan(None, 100, default_per_workload=25)

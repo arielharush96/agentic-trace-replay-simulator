@@ -199,9 +199,8 @@ print(f'\n{len(sessions)} sessions for $WL:\n')
 for s in sessions:
     tools = s['tool_call_count']
     turns = len(s['turns'])
-    events = len(s.get('client_events', []))
     conv = ' (conversational)' if tools == 0 else ''
-    print(f'  {s[\"session_id\"]:40s}  {turns:3d} turns  {tools:3d} calls  {events} events{conv}')
+    print(f'  {s[\"session_id\"]:40s}  {turns:3d} turns  {tools:3d} calls{conv}')
 "
     exit 0
 fi
@@ -346,7 +345,7 @@ echo "  retries:            $RETRIES"
 if [[ -n "$SIMULATED_TTFT" || -n "$SIMULATED_ITL" ]]; then
     echo "  simulated timing:   ttft=${SIMULATED_TTFT:-default}ms itl=${SIMULATED_ITL:-default}ms"
 fi
-echo "  mode:               client-boundary replay"
+echo "  mode:               multi-turn replay (one request per recorded turn)"
 echo "  model:              mock LLM sidecar (deterministic)"
 echo "  output:             $OUT_DIR"
 echo ""
@@ -365,10 +364,9 @@ for i, sid in enumerate(ids, 1):
     bench = s.get('benchmark', '?')
     turns = len(s.get('turns', []))
     calls = s.get('tool_call_count', 0)
-    events = len(s.get('client_events', []))
     agent = f'agent-{i:02d}'
     conv = ' [conversational]' if calls == 0 else ''
-    print(f'    {agent}  ←  {sid}  ({bench}, {turns} turns, {calls} calls, {events} msgs){conv}')
+    print(f'    {agent}  ←  {sid}  ({bench}, {turns} turns, {calls} calls){conv}')
 "
 echo ""
 
@@ -405,6 +403,7 @@ echo ""
 
 mkdir -p "$OUT_DIR"
 
+set +e
 python3 scripts/run_experiment.py \
     --execute \
     --retries "$RETRIES" \
@@ -413,7 +412,6 @@ python3 scripts/run_experiment.py \
     --session-ids "$SESSION_IDS" \
     --require-traces "$TOTAL_TRACES" \
     --workload-plan "$WORKLOAD_PLAN" \
-    --client-boundaries \
     --backend-manifest config/backend-manifest.example.json \
     --nodes "$NODES" \
     ${STORAGE_CLASS:+--workspace-access-mode ReadWriteOnce --workspace-storage-class "$STORAGE_CLASS"} \
@@ -427,7 +425,16 @@ python3 scripts/run_experiment.py \
     ${SIMULATED_TTFT:+--simulated-ttft "$SIMULATED_TTFT"} \
     ${SIMULATED_ITL:+--simulated-itl "$SIMULATED_ITL"} \
     $EXTRA \
-    2>&1 | tee "$OUT_DIR/controller.log" | grep -E '^\[|complete:|failed|sandbox pool:|trace [0-9]|deployment slot|quality' | grep -v 'corpus: mapped\|mock corpus\|workspace storage map\|workspace prefix\|storage: reusing\|temporary experiment\|deployment: preparing\|deployment: owned mock' || true
+    2>&1 | tee "$OUT_DIR/controller.log" | grep -E '^\[|complete:|failed|sandbox pool:|trace [0-9]|deployment slot|quality' | grep -v 'corpus: mapped\|mock corpus\|workspace storage map\|workspace prefix\|storage: reusing\|temporary experiment\|deployment: preparing\|deployment: owned mock'
+controller_status=${PIPESTATUS[0]}
+set -e
+
+if (( controller_status != 0 )); then
+    echo ""
+    echo "Benchmark failed: controller exited with status $controller_status" >&2
+    echo "  log: $OUT_DIR/controller.log" >&2
+    exit "$controller_status"
+fi
 
 # Summary
 echo ""

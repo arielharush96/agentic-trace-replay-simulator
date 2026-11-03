@@ -27,6 +27,32 @@ def test_symmetric_one_hundred_agent_allocation():
     assert set(allocation.values()) == {25}
 
 
+def test_zero_count_workloads_select_a_subset():
+    allocation = parse_workload_plan(
+        "software_engineering_qa=4,personal_assistant=0,research_deep_search=0,customer_support_ops=0",
+        4,
+    )
+    assert allocation == {"software_engineering_qa": 4}
+
+
+def test_single_agent_plan_is_accepted():
+    allocation = parse_workload_plan(
+        "personal_assistant=0,research_deep_search=0,software_engineering_qa=1,customer_support_ops=0",
+        1,
+    )
+    assert allocation == {"software_engineering_qa": 1}
+
+
+def test_negative_workload_count_is_rejected():
+    with pytest.raises(BackendConfigurationError, match="negative"):
+        parse_workload_plan("software_engineering_qa=-1,personal_assistant=5", 4)
+
+
+def test_all_zero_allocation_is_rejected():
+    with pytest.raises(BackendConfigurationError, match="at least one agent"):
+        parse_workload_plan("software_engineering_qa=0", 0)
+
+
 def test_missing_real_backends_fail_closed():
     backends = load_backends(None)
     backends["software_engineering_qa"] = replace(

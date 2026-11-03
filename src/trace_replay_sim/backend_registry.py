@@ -176,6 +176,9 @@ def parse_workload_plan(
     When no explicit plan is supplied, ``default_per_workload`` lets the
     operator request a symmetric workload run (for example 25 per category
     for 100 agents). The legacy 20-agent default remains unchanged.
+
+    Workloads assigned zero agents are dropped from the returned plan, so one
+    plan can select any subset of the four workloads.
     """
     if not value:
         per_workload = default_per_workload if default_per_workload is not None else 5
@@ -199,11 +202,14 @@ def parse_workload_plan(
             result[workload] = int(count)
         except ValueError as exc:
             raise BackendConfigurationError(f"invalid agent count for {workload}: {count!r}") from exc
-    if any(count < 1 for count in result.values()):
-        raise BackendConfigurationError("every workload must have at least one agent")
+    if any(count < 0 for count in result.values()):
+        raise BackendConfigurationError("workload allocation cannot contain negative agent counts")
+    selected = {workload: count for workload, count in result.items() if count > 0}
+    if not selected:
+        raise BackendConfigurationError("workload allocation requires at least one agent")
     if sum(result.values()) != total_agents:
         raise BackendConfigurationError(f"workload allocation totals {sum(result.values())}, but --agents={total_agents}")
-    return result
+    return selected
 
 
 def validate_backends(backends: dict[str, BackendSpec], workloads: list[str]) -> None:

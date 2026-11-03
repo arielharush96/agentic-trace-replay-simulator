@@ -35,6 +35,11 @@ def _arguments_sha256(arguments):
     return hashlib.sha256(payload.encode("utf-8")).hexdigest()
 
 
+def _render_call(expression: str, arguments: dict) -> str:
+    """Bind tool arguments through json.loads; JSON literals are not Python."""
+    return expression.replace("**arguments", f"**json.loads({json.dumps(arguments)!r})")
+
+
 class AppWorldAdapter:
     def __init__(self, root: str, mapping_path: str):
         os.environ["APPWORLD_ROOT"] = root
@@ -125,8 +130,8 @@ class AppWorldAdapter:
             arguments = self._translate_arguments(
                 session_id, world, app_name, api_name, dict(request.get("arguments") or {})
             )
-            code = "import json\n" + expression + "\nprint(json.dumps(response, default=str))"
-            output = world.execute(code.replace("**arguments", f"**{json.dumps(arguments)}"))
+            code = "import json\n" + _render_call(expression, arguments) + "\nprint(json.dumps(response, default=str))"
+            output = world.execute(code)
             if api_name == "login":
                 for line in reversed((output or "").splitlines()):
                     try:

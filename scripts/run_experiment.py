@@ -3415,6 +3415,10 @@ def build_queue(
             continue
         payload = json.loads(workload_path.read_text(encoding="utf-8"))
         limit = per_workload.get(workload, 0) if isinstance(per_workload, dict) else per_workload
+        if limit < 1 and not (session_id or session_ids):
+            # Zero-count workloads are not part of the run; explicit session
+            # selection remains authoritative for the workloads it names.
+            continue
         # The benchmark is explicitly a multi-turn/tool-calling benchmark.
         # Exclude recorded conversational sessions with no tool calls before
         # applying the offset/limit; otherwise a workload can silently yield
@@ -3527,7 +3531,6 @@ def create_trace_job(
     placement_node: str | None = None,
     prewarm_only: bool = False,
     user_key: str | None = None,
-    client_boundaries: bool = False,
 ) -> tuple[str, str, Path, str]:
     workload = safe_name(item["workload"])
     index = int(item["index"])
@@ -3567,12 +3570,8 @@ def create_trace_job(
         "--corpus", "/data/replay.json", "--out", "/results", "--layer", "shell",
         "--url", f"http://{agent}.{cluster.namespace}.svc.cluster.local:18790",
         "--model", "openclaw/perf_agent", "--token", "change-me-gateway-token",
-        "--timeout", "1800", "--stream",
+        "--timeout", "1800", "--stream", "--session-turns",
     ]
-    if client_boundaries:
-        if not item["session"].get("client_events"):
-            raise RuntimeError(f"{item['session']['session_id']} lacks extracted client events")
-        driver_args.append("--client-turns")
     if prewarm_requested:
         driver_args.append("--prewarm")
     if prewarm_only:
@@ -4405,7 +4404,6 @@ def main() -> int:
     parser.add_argument("--require-traces", type=int, help="fail unless the final queue has exactly this many traces")
     parser.add_argument("--session-id", help="run exactly one recorded session")
     parser.add_argument("--session-ids", help="comma-separated recorded session IDs to run concurrently")
-    parser.add_argument("--client-boundaries", action="store_true", help="drive only extracted client/user messages; OpenClaw owns tool loops")
     parser.add_argument("--agent-offset", type=int, default=0, help="offset queue positions into the deployed agent list")
     parser.add_argument("--agent-indices", help="comma-separated 1-based agent indices for the selected queue")
     parser.add_argument("--appworld", action="store_true", help="legacy shortcut for AppWorld-only runs")
@@ -5442,7 +5440,6 @@ def main() -> int:
                             if item["workload"] == "software_engineering_qa"
                             else None
                         ),
-                        client_boundaries=args.client_boundaries,
                     )
                     try:
                         collect_trace(
