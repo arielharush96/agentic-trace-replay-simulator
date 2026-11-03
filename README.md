@@ -74,17 +74,15 @@ for cluster deployment information, use this readme: https://github.com/arielhar
 Common variations:
 
 
-# software engineering only, 50 agents
+### software engineering only, 50 agents
 ./scripts/bench --agents 50 --nodes node-a,node-b --workload-dist swe --corpus data/replay.json
 
-# 80 ready sandboxes, the rest cold, to price readiness
+### 80 ready sandboxes, the rest cold, to price readiness
 ./scripts/bench --agents 100 --nodes node-a,node-b --warm-pool 80 --cold-ratio 0.2 --corpus data/replay.json
 
-# fast model: 15 ms to first token, 5 ms between tokens
+### fast model: 15 ms to first token, 5 ms between tokens
 ./scripts/bench --agents 100 --nodes node-a,node-b --simulated-ttft 15 --simulated-itl 5 --corpus data/replay.json
 
-# the same pacing through the alias flags
-./scripts/bench --agents 4 --nodes node-a,node-b --ttft-simulated 50 --itl-simulated 15 --corpus data/replay.json
 ```
 
 ## What you get
