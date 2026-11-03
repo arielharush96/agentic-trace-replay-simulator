@@ -70,8 +70,8 @@ Kueue deployment lives outside `kueue-system`, point the controller at it with
 | Requirement | Notes |
 | --- | --- |
 | OpenShift AI cluster | `oc get svc -n kueue-system kueue-webhook-service` confirms the admission webhook. |
-| OpenShell gateway |  the controller targets `TRACE_REPLAY_OPENSHELL_GATEWAY_ENDPOINT`. |
-| Agent image | Your own agent image; the manifests carry `example/openclaw-openshell:latest` as a placeholder. |
+| OpenShell gateway | The controller reaches it at `TRACE_REPLAY_OPENSHELL_GATEWAY_ENDPOINT` and copies its `openshell-client-tls` Secret out of the OpenShell namespace (`openshell-tracesim` by default). |
+| Agent image | Your own agent image; `k8s/35-openclaw-shell.yaml` carries `quay.io/example/...` placeholders and no image pull Secret, so add one if your registry is private. |
 | Storage class | Cluster default for the workspace PVCs, or set `TRACE_REPLAY_WORKSPACE_STORAGE_CLASS`. |
 | CLI tooling | `oc` with a kubeconfig, `bash` 4 or newer, Python 3.11. |
 
@@ -79,12 +79,18 @@ Apply the namespace objects the controller expects to find already present:
 
 ```bash
 oc apply -f k8s/00-namespace.yaml -f k8s/10-mock-llm.yaml -f k8s/20-jaeger.yaml \
-         -f k8s/34-openshell-sandbox-scc.yaml -f k8s/35-openclaw-shell.yaml \
-         -f k8s/openshell-certgen.yaml -f k8s/50-monitoring.yaml
+         -f k8s/34-openshell-sandbox-scc.yaml -f k8s/35-openclaw-shell.yaml
 ```
 
+`k8s/50-monitoring.yaml` is optional. It only creates a Secret holding a 1s
+cAdvisor scrape config for the two namespaces; it takes effect once that Secret
+is referenced from `prometheusK8s.additionalScrapeConfigs` in the existing
+`cluster-monitoring-config` ConfigMap. Without it the analysis falls back to the
+platform's 30s samples.
+
 The workload backends next to them are deployed by the controller for the
-workloads a run selects.
+workloads a run selects. `k8s/35-openclaw-shell.yaml` ships
+`change-me-gateway-token` as its gateway token; replace both copies before a run.
 
 ## Replay corpus
 
@@ -126,21 +132,21 @@ pip install -e ".[dev]"
 # see what would run, without touching the cluster
 ./scripts/bench --agents 100 --corpus data/replay.json --dry-run
 
-# run it
-./scripts/bench --agents 100 --corpus data/replay.json
+# run it across two worker nodes
+./scripts/bench --agents 100 --nodes node-a,node-b --corpus data/replay.json
 ```
 
 Common variations:
 
 ```bash
 # software engineering only, 50 agents
-./scripts/bench --agents 50 --workload-dist swe --corpus data/replay.json
+./scripts/bench --agents 50 --nodes node-a,node-b --workload-dist swe --corpus data/replay.json
 
 # 80 ready sandboxes, the rest cold, to price readiness
-./scripts/bench --agents 100 --warm-pool 80 --cold-ratio 0.2 --corpus data/replay.json
+./scripts/bench --agents 100 --nodes node-a,node-b --warm-pool 80 --cold-ratio 0.2 --corpus data/replay.json
 
 # fast model: 15 ms to first token, 5 ms between tokens
-./scripts/bench --agents 100 --simulated-ttft 15 --simulated-itl 5 --corpus data/replay.json
+./scripts/bench --agents 100 --nodes node-a,node-b --simulated-ttft 15 --simulated-itl 5 --corpus data/replay.json
 ```
 
 `./run.sh` (or `scripts/run_experiment.sh`) is the same controller with the full
@@ -148,10 +154,11 @@ flag set instead of the benchmark shorthand: explicit per-workload plan, node
 placement, storage class and access mode, gateway endpoint, and resume options.
 Use `--plan` there for the non-mutating check.
 
-Cluster settings are flags or `TRACE_REPLAY_*` variables: `TRACE_REPLAY_NODE`,
+Cluster settings are flags or environment variables: `NODES` (or `--nodes`),
+`KUBECONFIG`, and the `TRACE_REPLAY_*` set: `TRACE_REPLAY_NODE`,
 `TRACE_REPLAY_ALLOWED_NODES` (optional node allow-list, empty accepts any),
 `TRACE_REPLAY_OPENCLAW_IMAGE`, `TRACE_REPLAY_OPENSHELL_GATEWAY_ENDPOINT`,
-`TRACE_REPLAY_WORKSPACE_STORAGE_CLASS`, and `KUBECONFIG`.
+`TRACE_REPLAY_WORKSPACE_STORAGE_CLASS`.
 
 ## What you get
 
