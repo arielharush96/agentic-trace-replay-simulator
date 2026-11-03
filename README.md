@@ -70,8 +70,8 @@ Kueue deployment lives outside `kueue-system`, point the controller at it with
 | Requirement | Notes |
 | --- | --- |
 | OpenShift AI cluster | `oc get svc -n kueue-system kueue-webhook-service` confirms the admission webhook. |
-| OpenShell gateway | Deployed by you; the controller targets `TRACE_REPLAY_OPENSHELL_GATEWAY_ENDPOINT`. |
-| Agent image | Your own OpenClaw-on-OpenShell image; the manifests carry `quay.io/example/openclaw-openshell:latest` as a placeholder. |
+| OpenShell gateway |  the controller targets `TRACE_REPLAY_OPENSHELL_GATEWAY_ENDPOINT`. |
+| Agent image | Your own agent image; the manifests carry `example/openclaw-openshell:latest` as a placeholder. |
 | Storage class | Cluster default for the workspace PVCs, or set `TRACE_REPLAY_WORKSPACE_STORAGE_CLASS`. |
 | CLI tooling | `oc` with a kubeconfig, `bash` 4 or newer, Python 3.11. |
 
