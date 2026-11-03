@@ -89,8 +89,9 @@ is referenced from `prometheusK8s.additionalScrapeConfigs` in the existing
 platform's 30s samples.
 
 The workload backends next to them are deployed by the controller for the
-workloads a run selects. `k8s/35-openclaw-shell.yaml` ships
-`change-me-gateway-token` as its gateway token; replace both copies before a run.
+workloads a run selects. The gateway token `change-me-gateway-token` is a local
+placeholder that appears in the manifest and in the controller defaults; change
+it in every place or not at all.
 
 ## Replay corpus
 
