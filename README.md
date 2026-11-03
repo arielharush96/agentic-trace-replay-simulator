@@ -1,4 +1,4 @@
-# Agentic Trace Replay Simulator
+# Reproducible performance benchmarking and profiling for agentic systems using trace replay
 
 Want to benchmark your own agentic AI deployment? On different CPUs, with a
 different harness, after an optimization, or as you scale from ten agents to a
