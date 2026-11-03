@@ -29,6 +29,7 @@ COLD_RATIO=""      # e.g. 0.2 means 20% of agents use cold-start
 LIST_WORKLOADS=false
 LIST_SESSIONS=""
 DRY_RUN=false
+NODES="${NODES:-}"
 
 # Workload registry
 declare -A WL_BENCH=(
@@ -59,6 +60,7 @@ while [[ $# -gt 0 ]]; do
         --cold-ratio)        COLD_RATIO="$2"; shift 2 ;;
         --out|-o)            OUT_DIR="$2"; shift 2 ;;
         --corpus)            CORPUS="$2"; shift 2 ;;
+        --nodes)             NODES="$2"; shift 2 ;;
         --quick)             QUICK=true; shift ;;
         --dry-run)           DRY_RUN=true; shift ;;
         --list-workloads)    LIST_WORKLOADS=true; shift ;;
@@ -93,6 +95,10 @@ TRACE SELECTION
   --traces N, -t N          Traces per workload (default: 1 for small runs,
                              auto-computed from corpus for large runs)
   --session-ids IDS         Comma-separated session IDs (overrides --traces)
+
+CLUSTER
+  --nodes NODES             Worker nodes for the run, comma-separated
+                             (falls back to $NODES; required for a real run)
 
 EXECUTION
   --dispatch-interval SEC   Seconds between trace admissions (default: 2)
@@ -382,10 +388,10 @@ fi
 
 # Infrastructure
 export KUBECONFIG=${KUBECONFIG:-$HOME/.kube/config}
-NODES="${NODES:?set NODES to a comma-separated list of worker nodes}"
+: "${NODES:?set NODES or pass --nodes with the worker nodes for the run}"
 PVCS="${PVCS:-}"
 STORAGE_CLASS="${STORAGE_CLASS:-}"
-OPENSHELL_NAMESPACE="${OPENSHELL_NAMESPACE:-openshell}"
+OPENSHELL_NAMESPACE="${OPENSHELL_NAMESPACE:-openshell-tracesim}"
 GATEWAY_ENDPOINT="${GATEWAY_ENDPOINT:-}"
 
 EXTRA=""
