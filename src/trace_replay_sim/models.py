@@ -82,6 +82,7 @@ class ReplaySession:
     tool_call_count: int = 0
     recorded_duration_ms: float = 0.0
     turns: list[LLMTurn] = field(default_factory=list)
+    client_events: list[dict[str, Any]] = field(default_factory=list)
 
     @property
     def first_turn(self) -> LLMTurn | None:
@@ -117,6 +118,10 @@ class ReplaySession:
             "first_llm_duration_ms": first.duration_ms if first else 0.0,
             "gateway_text": self.gateway_text(),
             "turns": [t.to_dict() for t in self.turns],
+            "client_events": [
+                {"turn_index": int(event.get("turn_index") or 0), "content": str(event.get("content") or "")}
+                for event in self.client_events
+            ],
         }
 
     @classmethod
@@ -142,6 +147,11 @@ class ReplaySession:
             tool_call_count=int(data.get("tool_call_count") or 0),
             recorded_duration_ms=float(data.get("recorded_duration_ms") or 0.0),
             turns=turns,
+            client_events=[
+                {"turn_index": int(event.get("turn_index") or 0), "content": str(event.get("content") or "")}
+                for event in (data.get("client_events") or [])
+                if isinstance(event, dict)
+            ],
         )
 
 

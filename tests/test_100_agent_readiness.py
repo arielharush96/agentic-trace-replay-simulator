@@ -11,6 +11,7 @@ sys.path.insert(0, str(Path(__file__).parents[1] / "scripts"))
 from run_experiment import (
     _preflight_kueue_admission,
     build_queue,
+    create_trace_job,
     ensure_shared_workspace,
     pack_mock_corpus_sessions,
     prepare_workload_corpus,
@@ -200,3 +201,95 @@ def test_workspace_pvc_omits_storage_class_so_the_cluster_default_applies():
 
 def test_workspace_pvc_pins_an_explicit_storage_class():
     assert _workspace_pvc("cephfs-fast")["storageClassName"] == "cephfs-fast"
+
+
+class _RecordingTraceCluster:
+    node = "node-a"
+    namespace = "trace-replay"
+
+    def __init__(self):
+        self.configmaps: list[dict] = []
+        self.jobs: list[dict] = []
+
+    def upsert_owned_configmap(self, namespace, value):
+        self.configmaps.append(value)
+
+    def apply_json(self, value):
+        self.jobs.append(value)
+
+
+def _trace_job_driver_args(tmp_path, session):
+    cluster = _RecordingTraceCluster()
+    item = {"workload": "customer_support_ops", "index": 0, "session": session}
+    create_trace_job(
+        cluster,
+        item,
+        "agent-01",
+        tmp_path,
+        "trace-replay",
+        "run1",
+        prewarm_requested=False,
+    )
+    job = cluster.jobs[0]
+    return job["spec"]["template"]["spec"]["containers"][0]["args"]
+
+
+def _multi_segment_corpus(path: Path, client_events: list[dict] | None) -> Path:
+    session = {
+        "session_id": "needs-boundary",
+        "benchmark": "swebench",
+        "turns": [
+            {"index": 0, "tool_calls": [{"name": "Read", "arguments": {}}]},
+            {"index": 1, "content": "Which file?", "tool_calls": []},
+            {"index": 2, "tool_calls": [{"name": "Read", "arguments": {}}]},
+        ],
+    }
+    if client_events is not None:
+        session["client_events"] = client_events
+    path.write_text(json.dumps({"sessions": [session]}), encoding="utf-8")
+    return path
+
+
+def test_queue_rejects_multi_segment_sessions_without_client_events(tmp_path):
+    corpus = _multi_segment_corpus(tmp_path / "corpus.json", None)
+    allocation = parse_workload_plan("software_engineering_qa=1", 1)
+
+    with pytest.raises(RuntimeError, match="client_events"):
+        build_queue(corpus, tmp_path / "out", allocation)
+
+
+def test_queue_accepts_sessions_with_recorded_client_events(tmp_path):
+    corpus = _multi_segment_corpus(tmp_path / "corpus.json", [
+        {"turn_index": 0, "content": "Fix the build"},
+        {"turn_index": 2, "content": "Which file?"},
+    ])
+    allocation = parse_workload_plan("software_engineering_qa=1", 1)
+
+    queue = build_queue(corpus, tmp_path / "out", allocation)
+
+    assert len(queue) == 1
+    assert queue[0]["session"]["client_events"][1]["turn_index"] == 2
+
+
+def test_trace_job_drives_client_boundaries_instead_of_model_turns(tmp_path):
+    args = _trace_job_driver_args(tmp_path, {
+        "session_id": "s1",
+        "turns": [{"index": 0}, {"index": 1}, {"index": 2}],
+        "client_events": [
+            {"turn_index": 0, "content": "open the ticket"},
+            {"turn_index": 2, "content": "close it"},
+        ],
+    })
+
+    assert "--client-turns" in args
+    assert "--session-turns" not in args
+
+
+def test_trace_job_without_client_events_sends_one_user_request(tmp_path):
+    args = _trace_job_driver_args(tmp_path, {
+        "session_id": "s1",
+        "turns": [{"index": 0}, {"index": 1}],
+    })
+
+    assert "--client-turns" not in args
+    assert "--session-turns" not in args

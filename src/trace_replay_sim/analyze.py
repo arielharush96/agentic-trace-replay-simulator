@@ -290,7 +290,7 @@ def _build_report_md(layers: list[dict], timing: dict | None, q_analysis: dict |
         "",
         "- **Dataset**: Exgentic/agent-llm-traces (HuggingFace) — real recorded LLM sessions",
         "- **Mock LLM**: Returns pre-recorded responses with simulated streaming (TTFT=100ms, ITL=50ms per chunk)",
-        "- **Driver**: Sends one request per session to `/v1/responses` with streaming enabled",
+        "- **Driver**: Plays only the user: one streaming `/v1/responses` request at recorded turn 0 and at each later recorded user message; the gateway owns the tool loop in between",
         "- **OpenClaw**: Full agentic gateway with context assembly, tool schemas (group:fs, group:sessions, group:memory, group:runtime), and diagnostics-otel/prometheus plugins",
         "- **Measurement**: Driver E2E/TTFT + Jaeger OTEL spans for per-turn breakdown + Prometheus for resource usage",
         "",

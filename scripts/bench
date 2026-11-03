@@ -199,8 +199,9 @@ print(f'\n{len(sessions)} sessions for $WL:\n')
 for s in sessions:
     tools = s['tool_call_count']
     turns = len(s['turns'])
+    events = len(s.get('client_events') or [])
     conv = ' (conversational)' if tools == 0 else ''
-    print(f'  {s[\"session_id\"]:40s}  {turns:3d} turns  {tools:3d} calls{conv}')
+    print(f'  {s[\"session_id\"]:40s}  {turns:3d} turns  {tools:3d} calls  {events:2d} events{conv}')
 "
     exit 0
 fi
@@ -345,7 +346,7 @@ echo "  retries:            $RETRIES"
 if [[ -n "$SIMULATED_TTFT" || -n "$SIMULATED_ITL" ]]; then
     echo "  simulated timing:   ttft=${SIMULATED_TTFT:-default}ms itl=${SIMULATED_ITL:-default}ms"
 fi
-echo "  mode:               multi-turn replay (one request per recorded turn)"
+echo "  mode:               client-boundary replay (one request per recorded user message)"
 echo "  model:              mock LLM sidecar (deterministic)"
 echo "  output:             $OUT_DIR"
 echo ""
@@ -364,9 +365,10 @@ for i, sid in enumerate(ids, 1):
     bench = s.get('benchmark', '?')
     turns = len(s.get('turns', []))
     calls = s.get('tool_call_count', 0)
+    events = len(s.get('client_events') or [])
     agent = f'agent-{i:02d}'
     conv = ' [conversational]' if calls == 0 else ''
-    print(f'    {agent}  ←  {sid}  ({bench}, {turns} turns, {calls} calls){conv}')
+    print(f'    {agent}  ←  {sid}  ({bench}, {turns} turns, {calls} calls, {events} events){conv}')
 "
 echo ""
 

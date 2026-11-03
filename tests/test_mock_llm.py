@@ -15,7 +15,7 @@ from trace_replay_sim.mock_llm import (
     resolve_profile,
     serve,
 )
-from trace_replay_sim.driver import drive
+from trace_replay_sim.driver import drive, drive_client_turns
 
 
 FIXTURE = Path(__file__).parent / "fixtures" / "sample_exgentic_row.json"
@@ -87,6 +87,58 @@ def test_mock_llm_and_driver_roundtrip(tmp_path: Path):
     assert summary["ok"] == 1
     assert summary["errors"] == 0
     assert summary["e2e_p50_ms"] is not None
+
+
+def test_drive_client_turns_resumes_at_each_recorded_boundary(tmp_path: Path):
+    corpus = tmp_path / "replay.json"
+    corpus.write_text(json.dumps({
+        "sessions": [{
+            "session_id": "client-flow",
+            "user_prompt": "start",
+            "turns": [
+                {"index": 0, "content": "turn zero", "tool_calls": []},
+                {"index": 1, "content": "turn one", "tool_calls": []},
+                {"index": 2, "content": "turn two", "tool_calls": []},
+            ],
+            "client_events": [
+                {"turn_index": 0, "content": "start"},
+                {"turn_index": 2, "content": "come back"},
+            ],
+        }],
+    }), encoding="utf-8")
+    port = _free_port()
+    edges = tmp_path / "edges.jsonl"
+    thread = threading.Thread(
+        target=serve,
+        kwargs={
+            "host": "127.0.0.1",
+            "port": port,
+            "corpus_path": str(corpus),
+            "mode": "text",
+            "timing": "instant",
+            "edges_path": str(edges),
+        },
+        daemon=True,
+    )
+    thread.start()
+    _wait_ready(port)
+
+    summary = drive_client_turns(
+        corpus=corpus,
+        out_dir=tmp_path / "run",
+        layer="mock-direct",
+        url=f"http://127.0.0.1:{port}",
+        model="replay",
+        token="",
+        timeout=10,
+        stream=False,
+    )
+
+    assert summary["mode"] == "client-turns"
+    assert summary["client_events"] == 2
+    assert summary["ok"] == 2
+    served = [json.loads(line)["turn_seq"] for line in edges.read_text(encoding="utf-8").splitlines()]
+    assert served == [0, 2]
 
 
 # --------------------------------------------------------------------------- #

@@ -410,24 +410,32 @@ def _collapse_logical_rows(
     edges: list[dict[str, Any]],
     driver_requests: list[dict[str, Any]],
 ) -> list[dict[str, Any]]:
-    """Collapse OpenClaw's model/tool continuation into logical driver turns."""
+    """Order every model row by the recorded session turn it replays.
+
+    A client-boundary driver request carries a whole OpenClaw tool loop, so
+    each model call inside that trace is a recorded turn of its own.  The mock
+    edge for the call carries the session-level turn index; re-keying the rows
+    from it keeps per-turn artifacts at recorded-turn grain instead of
+    collapsing a multi-turn request into a single row.
+    """
     by_trace: dict[str, list[dict[str, Any]]] = {}
     for row in rows:
         by_trace.setdefault(str(row["trace_id"]), []).append(row)
 
-    logical: list[dict[str, Any]] = []
     edge_groups: dict[str, list[dict[str, Any]]] = {}
     for edge in edges:
         trace_id = str(edge.get("trace_id") or "")
         if trace_id and int(edge.get("turn_seq", -1)) >= 0:
             edge_groups.setdefault(trace_id, []).append(edge)
 
+    ordered: list[tuple[int, float, dict[str, Any]]] = []
     for trace_id, trace_rows in by_trace.items():
-        first = dict(sorted(trace_rows, key=lambda row: int(row.get("turn", 0)))[0])
+        ordered_rows = sorted(trace_rows, key=lambda row: int(row.get("turn", 0)))
         trace_edges = sorted(
             edge_groups.get(trace_id, []),
             key=lambda edge: int(edge.get("t_recv_wall_ns") or 0),
         )
+        request_start: Any = None
         if trace_edges:
             first_recv = int(trace_edges[0].get("t_recv_wall_ns") or 0)
             candidates = [
@@ -440,23 +448,36 @@ def _collapse_logical_rows(
                 if candidates
                 else None
             )
-            first["prompt_boundary_ms"] = (
-                round((first_recv - int(request_start)) / 1e6, 3)
-                if request_start is not None
-                else first.get("context_assembly_window_ms")
+        for position, row in enumerate(ordered_rows):
+            edge = trace_edges[position] if position < len(trace_edges) else None
+            prior_end = request_start if position == 0 else None
+            if position > 0 and position - 1 < len(trace_edges):
+                prior_end = trace_edges[position - 1].get("t_end_emit_wall_ns")
+            if edge is not None and prior_end is not None and edge.get("t_recv_wall_ns") is not None:
+                row["prompt_boundary_ms"] = round(
+                    (int(edge["t_recv_wall_ns"]) - int(prior_end)) / 1e6,
+                    3,
+                )
+            elif position == 0:
+                row["prompt_boundary_ms"] = row.get("context_assembly_window_ms")
+            turn_seq = (
+                int(edge.get("turn_seq"))
+                if edge is not None and int(edge.get("turn_seq", -1)) >= 0
+                else None
             )
-        else:
-            first["prompt_boundary_ms"] = first.get("context_assembly_window_ms")
-        first["_logical_first_recv_ns"] = int(trace_edges[0].get("t_recv_wall_ns") or 0) if trace_edges else 0
-        first["_logical_edges"] = trace_edges
-        logical.append(first)
+            row["_logical_edge"] = edge
+            ordered.append((
+                turn_seq if turn_seq is not None else 1 << 30,
+                float(row.get("model_start_ms") or 0.0),
+                row,
+            ))
 
-    logical.sort(key=lambda row: float(row.get("model_start_ms") or 0.0))
+    ordered.sort(key=lambda item: (item[0], item[1]))
+    logical: list[dict[str, Any]] = []
     previous: dict[str, Any] | None = None
-    previous_edges: list[dict[str, Any]] = []
-    for turn, row in enumerate(logical):
-        current_edges = row.pop("_logical_edges", [])
-        row.pop("_logical_first_recv_ns", None)
+    previous_edge: dict[str, Any] | None = None
+    for turn, (_, _, row) in enumerate(ordered):
+        edge = row.pop("_logical_edge", None)
         if turn == 0:
             row["context_assembly_bucket_ms"] = row.get("prompt_boundary_ms")
             row["response_processing_bucket_ms"] = 0.0
@@ -464,12 +485,12 @@ def _collapse_logical_rows(
             row["sandbox_execution_bucket_ms"] = 0.0
             row["tool_failure_bucket_ms"] = 0.0
         else:
-            if current_edges and previous_edges:
+            if edge and previous_edge:
                 row["context_assembly_bucket_ms"] = round(
                     max(
                         0,
-                        int(current_edges[0].get("t_recv_wall_ns") or 0)
-                        - int(previous_edges[-1].get("t_end_emit_wall_ns") or 0),
+                        int(edge.get("t_recv_wall_ns") or 0)
+                        - int(previous_edge.get("t_end_emit_wall_ns") or 0),
                     )
                     / 1e6,
                     3,
@@ -486,9 +507,9 @@ def _collapse_logical_rows(
             row["tool_failure_bucket_ms"] = previous.get("tool_failure_ms") or 0.0 if previous else 0.0
         row["turn"] = turn
         row["sandbox_init_bucket_ms"] = row.get("sandbox_init_ms")
-        logical[turn] = row
+        logical.append(row)
         previous = row
-        previous_edges = current_edges
+        previous_edge = edge
     return logical
 
 
@@ -1115,10 +1136,10 @@ def profile(*, traces: Path, mock_edges: Path | None, out: Path, prom: Path | No
     if edge_trace_ids:
         raw = [trace for trace in raw if str(trace.get("traceID") or "") in edge_trace_ids]
     built_rows = build_rows(raw, edges, driver_requests_rows)
-    # Normal replay has one raw Jaeger trace containing all model/tool cycles;
-    # retain those model spans as the logical turns.  The collapse path is only
-    # for the older session-turn export, where each driver request was emitted
-    # as a separate raw trace with an automatic continuation span.
+    # Client-boundary replay emits one raw Jaeger trace per client message and
+    # the harness runs the tool loop inside it, so a multi-trace session still
+    # has one model row per recorded turn.  Re-key those rows from the mock
+    # edges into recorded-turn order.
     rows = (
         _collapse_logical_rows(built_rows, edges, driver_requests_rows)
         if len(raw) > 1

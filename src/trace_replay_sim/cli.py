@@ -109,6 +109,8 @@ def main(argv: list[str] | None = None) -> int:
     p_drv.add_argument("--timeout", type=float, default=120.0)
     p_drv.add_argument("--stream", action="store_true")
     p_drv.add_argument("--no-spans", action="store_true", help="disable OTLP span export")
+    p_drv.add_argument("--client-turns", action="store_true",
+                       help="send one request per recorded client message and let the harness run the tool loop")
     p_drv.add_argument("--session-turns", action="store_true",
                        help="send one request per corpus turn while reusing one harness session")
     p_drv.add_argument("--prewarm", action="store_true",
@@ -195,7 +197,19 @@ def main(argv: list[str] | None = None) -> int:
         serve(args.host, args.port, args.corpus, mode=args.mode, timing=args.timing, edges_path=args.edges)
         return 0
     if args.cmd == "drive":
-        if args.session_turns:
+        if args.client_turns and args.session_turns:
+            parser.error("--client-turns and --session-turns are mutually exclusive")
+        if args.client_turns:
+            from trace_replay_sim.driver import drive_client_turns
+            summary = drive_client_turns(
+                corpus=Path(args.corpus), out_dir=Path(args.out), layer=args.layer,
+                url=args.url, model=args.model, token=args.token,
+                timeout=args.timeout, stream=args.stream,
+                export_spans=not args.no_spans,
+                prewarm=args.prewarm,
+                harness=args.harness,
+            )
+        elif args.session_turns:
             from trace_replay_sim.driver import drive_session_turns
             summary = drive_session_turns(
                 corpus=Path(args.corpus), out_dir=Path(args.out), layer=args.layer,

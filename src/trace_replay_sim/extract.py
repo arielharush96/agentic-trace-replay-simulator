@@ -224,12 +224,81 @@ def _first_user_prompt(messages: list[Any]) -> str:
     for message in messages:
         if not isinstance(message, dict):
             continue
-        if str(message.get("role") or "").lower() != "user":
+        if str(message.get("role") or "").lower() not in {"user", "human"}:
             continue
         text = _message_text(message).strip()
         if text:
             return text
     return ""
+
+
+_TOOL_RESULT_PART_TYPES = {
+    "tool_result",
+    "tool_call_response",
+    "function_response",
+    "tool_response",
+}
+
+
+def _client_message_text(message: dict[str, Any]) -> str:
+    """Return the user-visible text of a client message, ignoring tool results."""
+    if str(message.get("role") or "").lower() not in {"user", "human"}:
+        return ""
+    parts = message.get("parts") or message.get("content") or message.get("contents")
+    if isinstance(parts, str):
+        return parts.strip()
+    chunks: list[str] = []
+    has_tool_result = False
+    for part in _as_list(parts):
+        if isinstance(part, str):
+            chunks.append(part)
+            continue
+        if not isinstance(part, dict):
+            continue
+        ptype = str(part.get("type") or part.get("kind") or "").lower()
+        if ptype in _TOOL_RESULT_PART_TYPES:
+            has_tool_result = True
+            continue
+        if ptype in {"tool_call", "function_call"}:
+            continue
+        for key in ("content", "text", "value"):
+            if part.get(key):
+                chunks.append(str(part[key]))
+                break
+    text = "\n".join(chunk for chunk in chunks if chunk).strip()
+    if text:
+        return text
+    if has_tool_result:
+        return ""
+    for key in ("content", "text"):
+        value = message.get(key)
+        if isinstance(value, str) and value.strip():
+            return value.strip()
+    return ""
+
+
+def _client_messages(messages: list[Any]) -> list[str]:
+    found: list[str] = []
+    for message in messages:
+        if not isinstance(message, dict):
+            continue
+        text = _client_message_text(message)
+        if text:
+            found.append(text)
+    return found
+
+
+def _new_client_messages(previous: list[str], current: list[str]) -> list[str]:
+    """Messages appended to the client channel since the previous model call."""
+    if not current:
+        return []
+    if len(current) > len(previous) and current[:len(previous)] == previous:
+        return current[len(previous):]
+    # Compaction can rewrite the history prefix; a changed tail is still a
+    # client turn because tool-driven continuations repeat the same tail.
+    if not previous or current[-1] != previous[-1]:
+        return [current[-1]]
+    return []
 
 
 def _int_attr(span: dict[str, Any], *keys: str) -> int:
@@ -255,6 +324,8 @@ def extract_session(row: dict[str, Any]) -> ReplaySession | None:
     user_prompt = ""
     tool_call_count = 0
     recorded_ms = 0.0
+    client_events: list[dict[str, Any]] = []
+    previous_client_messages: list[str] = []
 
     for index, span in enumerate(llm_spans):
         inputs = _parse_json(_attr(span, "gen_ai.input.messages", "gen_ai.prompt", default=[]))
@@ -263,6 +334,14 @@ def extract_session(row: dict[str, Any]) -> ReplaySession | None:
         output_messages = _as_list(outputs)
         if not user_prompt:
             user_prompt = _first_user_prompt(input_messages)
+        # A client boundary is where the recorded conversation gained a new
+        # user-visible message. Between boundaries the harness owns the tool
+        # loop; the driver must not send one request per model turn.
+        client_messages = _client_messages(input_messages)
+        new_client_messages = _new_client_messages(previous_client_messages, client_messages)
+        if new_client_messages:
+            client_events.append({"turn_index": index, "content": new_client_messages[-1]})
+        previous_client_messages = client_messages
 
         content_chunks: list[str] = []
         tool_calls: list[ToolCall] = []
@@ -293,6 +372,33 @@ def extract_session(row: dict[str, Any]) -> ReplaySession | None:
 
     if not turns:
         return None
+
+    # A recorded turn that ends without a tool call hands control back to the
+    # user, so the next turn starts a new client segment.  Keep those
+    # boundaries even when the span input omitted the user channel, otherwise
+    # the replay would truncate the rest of the conversation.
+    boundaries = {int(event["turn_index"]): str(event["content"]) for event in client_events}
+    for index, turn in enumerate(turns[:-1]):
+        if not turn.tool_calls:
+            boundaries.setdefault(index + 1, "")
+    client_events = [
+        {
+            "turn_index": index,
+            "content": content or "Continue the recorded conversation.",
+        }
+        for index, content in sorted(boundaries.items())
+    ]
+
+    if not client_events:
+        client_events.append({
+            "turn_index": 0,
+            "content": user_prompt or "Continue the recorded task.",
+        })
+    elif client_events[0]["turn_index"] != 0:
+        client_events.insert(0, {
+            "turn_index": 0,
+            "content": user_prompt or client_events[0]["content"],
+        })
 
     # --- attach recorded tool results from next span's input messages ---
     session_id_str = str(row.get("session_id") or row.get("sessionId") or (turns[0].span_id if turns else ""))
@@ -334,6 +440,7 @@ def extract_session(row: dict[str, Any]) -> ReplaySession | None:
         tool_call_count=tool_call_count,
         recorded_duration_ms=recorded_ms,
         turns=turns,
+        client_events=client_events,
     )
 
 

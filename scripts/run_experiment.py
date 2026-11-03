@@ -3394,6 +3394,28 @@ def prepare_workload_corpus(
     return out
 
 
+def _require_client_boundaries(queue: list[dict[str, Any]]) -> None:
+    """Refuse sessions whose mid-session user messages were never recorded.
+
+    A turn that ends without a tool call hands control back to the user.  If
+    the corpus has no client boundary there, replaying it as one request would
+    stop at that turn and silently drop the rest of the conversation.
+    """
+    missing: list[str] = []
+    for item in queue:
+        session = item["session"]
+        turns = session.get("turns") or []
+        needs_boundaries = any(not turn.get("tool_calls") for turn in turns[:-1])
+        if needs_boundaries and not session.get("client_events"):
+            missing.append(str(session.get("session_id") or "?"))
+    if missing:
+        raise RuntimeError(
+            "corpus sessions contain mid-session user messages but no client_events "
+            "(rebuild the corpus with `trace-replay-sim ingest`): "
+            + ", ".join(missing[:5])
+        )
+
+
 def build_queue(
     source: Path,
     out: Path,
@@ -3457,7 +3479,9 @@ def build_queue(
             items = workload_queues.get(workload) or []
             if items:
                 queue.append(items.pop(0))
-    return queue[:max_traces] if max_traces is not None else queue
+    queue = queue[:max_traces] if max_traces is not None else queue
+    _require_client_boundaries(queue)
+    return queue
 
 
 def prewarm_pool_sandboxes(
@@ -3570,8 +3594,13 @@ def create_trace_job(
         "--corpus", "/data/replay.json", "--out", "/results", "--layer", "shell",
         "--url", f"http://{agent}.{cluster.namespace}.svc.cluster.local:18790",
         "--model", "openclaw/perf_agent", "--token", "change-me-gateway-token",
-        "--timeout", "1800", "--stream", "--session-turns",
+        "--timeout", "1800", "--stream",
     ]
+    if item["session"].get("client_events"):
+        # The driver only plays the user: one request per recorded client
+        # message.  The harness owns the tool loop in between, so a model turn
+        # without a tool call never truncates the rest of the conversation.
+        driver_args.append("--client-turns")
     if prewarm_requested:
         driver_args.append("--prewarm")
     if prewarm_only:
@@ -3580,11 +3609,10 @@ def create_trace_job(
         driver_args.extend(["--user-key", user_key])
     driver_container: dict[str, Any] = {
         "name": "driver", "image": "python:3.12-slim", "command": ["python", "/app/driver.py"],
-        # Drive each recorded turn as an explicit request while preserving one
-        # harness conversation.  This is required for traces that contain an
-        # intermediate assistant turn without a tool call: a single high-level
-        # request would make OpenClaw treat that turn as the end of the task
-        # and would silently truncate the remaining recorded conversation.
+        # Drive only the user side of the recorded conversation while keeping
+        # one harness session.  Traces with real user messages mid-session get
+        # one request per client boundary (--client-turns); the harness owns
+        # the tool loop, so the driver never sends a request per model turn.
         "args": driver_args,
         "volumeMounts": [{"name": "driver-app", "mountPath": "/app"}, {"name": "corpus", "mountPath": "/data"}, {"name": "results", "mountPath": "/results"}],
     }

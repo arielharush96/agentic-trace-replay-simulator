@@ -1,12 +1,15 @@
 """Load generator: replay recorded user sessions against a harness endpoint.
 
 Plays the GuideLLM role: the *client-edge* ground truth. In the openclaw/shell
-layers the driver sends ONE high-level prompt per session -> ONE ``openclaw.run``
-that internally loops N model calls, so the driver only observes **session-level**
-edges (t_send, t_first byte of the whole run, t_end). Per-*turn* skew-free timing
-is owned by the mock (see ``mock_llm.EdgeRecorder``). In the mock-direct layer each
-request IS a single turn, so the driver's session edges are also that turn's edges
-and provide the control net-floor.
+layers the driver is only the user: it sends one request at the recorded turn 0
+and at every later recorded user message (``--client-turns``), and the harness
+owns the tool loop in between. Each request is one ``openclaw.run`` that can
+internally loop N model calls, so the driver observes **client-edge** timing
+(t_send, t_first byte, t_end). Per-*turn* skew-free timing is owned by the mock
+(see ``mock_llm.EdgeRecorder``). The legacy ``--session-turns`` mode sends one
+request per recorded model turn and is retained for old exports. In the
+mock-direct layer each request IS a single turn, so the driver's session edges
+are also that turn's edges and provide the control net-floor.
 
 The driver generates a W3C ``traceparent`` per request and propagates it so
 driver -> harness -> model/tool spans can stitch into one trace, and exports
@@ -645,6 +648,175 @@ def drive_session_turns(
     return summary
 
 
+def drive_client_turns(
+    *,
+    corpus: Path,
+    out_dir: Path,
+    layer: str,
+    url: str,
+    model: str | None,
+    token: str,
+    timeout: float,
+    stream: bool,
+    export_spans: bool = True,
+    prewarm: bool = False,
+    prewarm_only: bool = False,
+    user_key_override: str | None = None,
+    harness: str = "openclaw",
+) -> dict[str, Any]:
+    """Drive only the user side of the recorded conversation.
+
+    One request is sent per recorded client message.  Between client messages
+    the agent harness owns the tool loop, so the driver never sends a request
+    per model turn.  Each request carries the recorded turn index at which its
+    segment starts, letting the mock resume the conversation exactly there.
+    """
+    sessions = load_sessions(corpus, limit=1)
+    if not sessions:
+        raise ValueError("client-turn mode requires a non-empty corpus")
+    session = sessions[0]
+    session_id = str(session.get("session_id"))
+    events = [
+        event for event in (session.get("client_events") or [])
+        if isinstance(event, dict)
+    ]
+    if not events:
+        events = [{
+            "turn_index": 0,
+            "content": str(session.get("user_prompt") or "Continue the recorded task."),
+        }]
+    events.sort(key=lambda event: int(event.get("turn_index") or 0))
+    # Never inherit conversation state from an earlier benchmark. The mock
+    # session identity remains stable for replay matching, while OpenClaw gets
+    # a unique user/session key for this run.
+    user_key = user_key_override or f"trace-replay:{session_id}:{uuid.uuid4().hex[:10]}"
+    out_dir.mkdir(parents=True, exist_ok=True)
+    run_started = time.time()
+    measured_started = run_started
+    results: list[RequestResult] = []
+    previous_response_id: str | None = None
+    warmup_metadata: dict[str, Any] | None = None
+    if prewarm:
+        warmup_prompt = (
+            f"REPLAY_SESSION_ID={session_id}\n"
+            "REPLAY_WARMUP=1\n"
+            f"<!--replay-session:{session_id}-->\n"
+            "Prepare the execution environment and reply with warmup."
+        )
+        warmup_started = time.time()
+        warmup = run_one(
+            session,
+            layer=layer,
+            url=url,
+            model=model,
+            token=token,
+            timeout=timeout,
+            stream=stream,
+            export_spans=export_spans,
+            prompt_override=warmup_prompt,
+            harness=harness,
+        )
+        warmup_ended = time.time()
+        warmup_metadata = {
+            "ok": warmup.ok,
+            "status": warmup.status,
+            "error": warmup.error,
+            "duration_ms": round((warmup_ended - warmup_started) * 1000.0, 3),
+            "request_e2e_ms": warmup.e2e_ms,
+            "trace_id": warmup.trace_id,
+            "start_unix": warmup_started,
+            "end_unix": warmup_ended,
+        }
+        if not warmup.ok:
+            raise RuntimeError(f"sandbox prewarm failed: {warmup.error or warmup.status}")
+        if warmup.response_id:
+            previous_response_id = warmup.response_id
+        if prewarm_only:
+            summary = {
+                "ok": True,
+                "errors": 0,
+                "ok_count": 1,
+                "sessions": 1,
+                "layer": layer,
+                "harness": "mock-llm" if layer == "mock-direct" else get_harness(harness).name,
+                "mode": "client-turns",
+                "session_id": session_id,
+                "client_events": len(events),
+                "turns": 0,
+                "target_url": url,
+                "model": model or ("replay" if layer == "mock-direct" else get_harness(harness).default_model),
+                "stream": stream,
+                "prewarm": True,
+                "prewarm_only": True,
+                "user_key": user_key,
+                "warmup": warmup_metadata,
+                "run_start_unix": run_started,
+                "start_unix": time.time(),
+                "end_unix": time.time(),
+                "wall_s": 0.0,
+                "rps": 0.0,
+                "ok_rps": 0.0,
+            }
+            (out_dir / "summary.json").write_text(json.dumps(summary, indent=2), encoding="utf-8")
+            (out_dir / "requests.jsonl").write_text("", encoding="utf-8")
+            return summary
+        measured_started = time.time()
+    for event in events:
+        turn_index = int(event.get("turn_index") or 0)
+        content = str(event.get("content") or "").strip() or "Continue the recorded conversation."
+        prompt = (
+            f"REPLAY_SESSION_ID={session_id}\n"
+            f"<!--replay-session:{session_id}-->\n"
+            f"<!--replay-client-turn:{turn_index}-->\n"
+            f"{content}"
+        )
+        result = run_one(
+            session,
+            layer=layer,
+            url=url,
+            model=model,
+            token=token,
+            timeout=timeout,
+            stream=stream,
+            export_spans=export_spans,
+            prompt_override=prompt,
+            previous_response_id=previous_response_id,
+            harness=harness,
+        )
+        results.append(result)
+        if result.response_id:
+            previous_response_id = result.response_id
+    ended = time.time()
+    wall_s = max(0.001, ended - measured_started)
+    summary = summarize(results)
+    summary.update({
+        "layer": layer,
+        "harness": "mock-llm" if layer == "mock-direct" else get_harness(harness).name,
+        "mode": "client-turns",
+        "session_id": session_id,
+        "client_events": len(events),
+        "turns": len(results),
+        "target_url": url,
+        "model": model or ("replay" if layer == "mock-direct" else get_harness(harness).default_model),
+        "stream": stream,
+        "prewarm": prewarm,
+        "prewarm_only": prewarm_only,
+        "user_key": user_key,
+        "warmup": warmup_metadata,
+        "run_start_unix": run_started,
+        "start_unix": measured_started,
+        "end_unix": ended,
+        "wall_s": round(wall_s, 3),
+        "rps": round(len(results) / wall_s, 4),
+        "ok_rps": round(summary["ok"] / wall_s, 4),
+    })
+    (out_dir / "summary.json").write_text(json.dumps(summary, indent=2), encoding="utf-8")
+    with (out_dir / "requests.jsonl").open("w", encoding="utf-8") as handle:
+        for item in results:
+            handle.write(json.dumps(asdict(item)) + "\n")
+    return summary
+
+
 def main(argv: list[str] | None = None) -> int:
     parser = argparse.ArgumentParser(description="Replay-trace load driver")
     parser.add_argument("--corpus", required=True)
@@ -666,6 +838,8 @@ def main(argv: list[str] | None = None) -> int:
     parser.add_argument("--timeout", type=float, default=120.0)
     parser.add_argument("--stream", action="store_true")
     parser.add_argument("--no-spans", action="store_true", help="disable OTLP span export")
+    parser.add_argument("--client-turns", action="store_true",
+                        help="send one request per recorded client message and let the harness run the tool loop")
     parser.add_argument("--session-turns", action="store_true",
                         help="send one request per corpus turn while reusing one OpenClaw session")
     parser.add_argument("--prewarm", action="store_true",
@@ -675,7 +849,20 @@ def main(argv: list[str] | None = None) -> int:
     parser.add_argument("--user-key", default=None,
                         help="stable OpenClaw user/session key for sandbox reuse across Jobs")
     args = parser.parse_args(argv)
-    if args.session_turns:
+    if args.client_turns and args.session_turns:
+        parser.error("--client-turns and --session-turns are mutually exclusive")
+    if args.client_turns:
+        summary = drive_client_turns(
+            corpus=Path(args.corpus), out_dir=Path(args.out), layer=args.layer,
+            url=args.url, model=args.model, token=args.token,
+            timeout=args.timeout, stream=args.stream,
+            export_spans=not args.no_spans,
+            prewarm=args.prewarm,
+            prewarm_only=args.prewarm_only,
+            user_key_override=args.user_key,
+            harness=args.harness,
+        )
+    elif args.session_turns:
         summary = drive_session_turns(
             corpus=Path(args.corpus), out_dir=Path(args.out), layer=args.layer,
             url=args.url, model=args.model, token=args.token,

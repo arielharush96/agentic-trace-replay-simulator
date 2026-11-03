@@ -18,6 +18,10 @@ That is what makes a before/after comparison mean something.
 
 Recorded multi-turn sessions go in. A replay driver spreads them across agents,
 balances the workload mix, and schedules them at the concurrency you ask for.
+The driver plays only the user: it sends a request at recorded turn 0 and at
+each later recorded user message. Between those boundaries the agent owns the
+tool loop, so an intermediate assistant turn without a tool call never
+truncates the rest of the conversation.
 Each agent then does its normal work - context assembly, tool decisions,
 response processing against a simulator that returns the recorded response at
 a configurable pace. Tool calls take the ordinary route into an OpenShell sandbox

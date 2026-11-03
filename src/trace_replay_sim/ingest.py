@@ -98,6 +98,8 @@ def _stats(sessions: list[ReplaySession]) -> dict[str, Any]:
         "sessions": len(sessions),
         "llm_calls": sum(s.llm_calls for s in sessions),
         "tool_calls": sum(s.tool_call_count for s in sessions),
+        "client_events": sum(len(s.client_events) for s in sessions),
+        "multi_client_sessions": sum(len(s.client_events) > 1 for s in sessions),
         "harnesses": dict(Counter(s.harness for s in sessions)),
         "benchmarks": dict(Counter(s.benchmark for s in sessions)),
         "avg_input_tokens_first": round(sum((s.first_turn.input_tokens if s.first_turn else 0) for s in sessions) / len(sessions), 1),
