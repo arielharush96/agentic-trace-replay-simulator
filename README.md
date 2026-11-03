@@ -70,30 +70,9 @@ for cluster deployment information, use this readme: https://github.com/arielhar
 
 ## Running
 
-```bash
-# once per checkout
-python3 -m venv .venv && source .venv/bin/activate
-pip install -e ".[dev]"
-
-# see what would run, without touching the cluster
-./scripts/bench --agents 100 --corpus data/replay.json --dry-run
-
-# run it across two worker nodes
-./scripts/bench --agents 100 --nodes node-a,node-b --corpus data/replay.json
-```
-
-`data/replay.json` is a four-trace sample (one per workload) so the demo runs
-out of the box; replace it with your own corpus for production runs. The sample
-targets the default `trace-replay` namespace and its `mock-llm` Service, so keep
-that namespace or regenerate the corpus for a different one.
 
 Common variations:
 
-```bash
-# classic four-trace demo: one agent per workload
-# data/replay.json ships with the repo; THANOS_HOST is the Thanos querier route
-THANOS_HOST=thanos-querier-openshift-monitoring.apps.example.com \
-  ./scripts/demo.sh --nodes node-a,node-b
 
 # software engineering only, 50 agents
 ./scripts/bench --agents 50 --nodes node-a,node-b --workload-dist swe --corpus data/replay.json
@@ -108,28 +87,11 @@ THANOS_HOST=thanos-querier-openshift-monitoring.apps.example.com \
 ./scripts/bench --agents 4 --nodes node-a,node-b --ttft-simulated 50 --itl-simulated 15 --corpus data/replay.json
 ```
 
-`./run.sh` (or `scripts/run_experiment.sh`) is the same controller with the full
-flag set instead of the benchmark shorthand: explicit per-workload plan, node
-placement, storage class and access mode, gateway endpoint, and resume options.
-Use `--plan` there for the non-mutating check.
-
-Cluster settings are flags or environment variables: `NODES` (or `--nodes`),
-`KUBECONFIG`, `THANOS_HOST` (the Thanos querier route used for CPU/memory
-collection; optional - if it is unset or unreachable, the collection manifest
-records a warning and the trace still completes), and the `TRACE_REPLAY_*`
-set: `TRACE_REPLAY_NODE`, `TRACE_REPLAY_ALLOWED_NODES` (optional node
-allow-list, empty accepts any), `TRACE_REPLAY_OPENCLAW_IMAGE`,
-`TRACE_REPLAY_OPENSHELL_GATEWAY_ENDPOINT`,
-`TRACE_REPLAY_WORKSPACE_STORAGE_CLASS`.
-
 ## What you get
 
 Each run writes per-turn and per-tool CSV and JSON, OpenTelemetry traces, cgroup
 and Prometheus CPU/memory series, sandbox and tool timing, node and warm-pool
 assignments, and the analysis plots.
-
-Before requesting cluster access, `scripts/check_local_readiness.sh` runs the
-same 100-agent queue-building path locally, without touching the cluster.
 
 ## Layout
 
