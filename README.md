@@ -70,7 +70,7 @@ The knobs that matter:
 `scripts/bench --help` has the full list, including retries, output directory, and
 a set of worked examples.
 
-
+for cluster deployment information, use this readme: https://github.com/arielharush96/agentic-trace-replay-simulator/blob/main/k8s/deployment-readme.md
 
 ## Replay corpus
 
